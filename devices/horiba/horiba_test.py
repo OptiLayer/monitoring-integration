@@ -114,9 +114,13 @@ async def acquire_spectrum(
     await ccd.acquisition_abort()  # reset CCD state for next acquisition
     print(f"  Raw acquisition keys: {list(raw.keys())}")
     for i, acq in enumerate(raw.get("acquisition", [])):
-        print(f"  acquisition[{i}]: acqIndex={acq.get('acqIndex')}, ROIs={len(acq.get('roi', []))}")
+        print(
+            f"  acquisition[{i}]: acqIndex={acq.get('acqIndex')}, ROIs={len(acq.get('roi', []))}"
+        )
         for j, roi in enumerate(acq.get("roi", [])):
-            print(f"    roi[{j}]: xData={len(roi.get('xData', []))} pts, yData rows={len(roi.get('yData', []))}")
+            print(
+                f"    roi[{j}]: xData={len(roi.get('xData', []))} pts, yData rows={len(roi.get('yData', []))}"
+            )
     return raw
 
 
@@ -196,8 +200,16 @@ async def test_connect_and_discover(args: argparse.Namespace) -> DeviceManager:
     return dm
 
 
-async def test_initialize_mono(mono: Monochromator) -> dict:
-    """Step 2: Initialize monochromator, read configuration."""
+async def test_initialize_mono(
+    mono: Monochromator,
+    slit_a_mm: float = 0.2,
+    slit_b_mm: float = 0.2,
+) -> dict:
+    """Step 2: Initialize monochromator, read configuration.
+
+    Slit widths are set before reading positions. Pass a negative value to
+    leave the corresponding slit at its current position.
+    """
     print("\n" + "=" * 60)
     print("STEP 2: Initialize monochromator")
     print("=" * 60)
@@ -228,13 +240,27 @@ async def test_initialize_mono(mono: Monochromator) -> dict:
         except Exception:
             pass
 
-    # Read slit positions
-    for slit in [Monochromator.Slit.A, Monochromator.Slit.B]:
+    # Set and read slit positions
+    slit_targets = {
+        Monochromator.Slit.A: slit_a_mm,
+        Monochromator.Slit.B: slit_b_mm,
+    }
+    for slit, target_mm in slit_targets.items():
+        if target_mm < 0:
+            print(f"  Slit {slit.name}: leaving at current position")
+        else:
+            try:
+                await mono.set_slit_position(slit, target_mm)
+                await wait_mono_ready(mono)
+                print(f"  Slit {slit.name}: set to {target_mm:.3f} mm")
+            except Exception as e:
+                print(f"  Slit {slit.name}: set failed ({e})")
+
         try:
             pos = await mono.get_slit_position_in_mm(slit)
             print(f"  Slit {slit.name} position:  {pos:.3f} mm")
         except Exception as e:
-            print(f"  Slit {slit.name}: not available ({e})")
+            print(f"  Slit {slit.name}: read failed ({e})")
 
     # Read shutter status
     try:
@@ -522,8 +548,10 @@ async def test_range_scan(
         captures.append([x_data, y_data])
 
         elapsed = time.monotonic() - t0
-        print(f"  [{i + 1}/{len(center_wavelengths)}] center={actual_wl:.1f} nm  "
-              f"range={x_data[0]:.1f}-{x_data[-1]:.1f} nm  t={elapsed:.1f}s")
+        print(
+            f"  [{i + 1}/{len(center_wavelengths)}] center={actual_wl:.1f} nm  "
+            f"range={x_data[0]:.1f}-{x_data[-1]:.1f} nm  t={elapsed:.1f}s"
+        )
 
     total_time = time.monotonic() - t0
     print(f"\n  Total scan time: {total_time:.1f} s")
@@ -606,7 +634,7 @@ async def run_all_tests(args: argparse.Namespace) -> None:
     try:
         # Step 2: Init monochromator (optional — CCD can work without it for BBM)
         try:
-            await test_initialize_mono(mono)
+            await test_initialize_mono(mono, args.slit_a, args.slit_b)
             mono_ok = True
             results.append(("2. Init monochromator", "PASS"))
         except Exception as e:
@@ -638,7 +666,10 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         if ccd_ok:
             try:
                 await test_setup_ccd_acquisition(
-                    ccd, mono if mono_ok else None, center_wl, chip_size,
+                    ccd,
+                    mono if mono_ok else None,
+                    center_wl,
+                    chip_size,
                     grating_index=args.grating,
                 )
                 results.append(("5. Configure CCD", "PASS"))
@@ -760,7 +791,9 @@ def main():
         "--icl-port", type=int, default=25010, help="ICL WebSocket port"
     )
     parser.add_argument(
-        "--start-icl", action="store_true", help="Auto-start ICL.exe (default: don't start)"
+        "--start-icl",
+        action="store_true",
+        help="Auto-start ICL.exe (default: don't start)",
     )
     parser.add_argument(
         "--wavelength", type=float, default=500.0, help="Target wavelength in nm"
@@ -778,7 +811,22 @@ def main():
         "--end-wl", type=float, default=600.0, help="Range scan end wavelength (nm)"
     )
     parser.add_argument(
-        "--grating", type=int, default=0, help="Grating index: 0=FIRST(1800), 1=SECOND(1200), 2=THIRD(300)"
+        "--grating",
+        type=int,
+        default=0,
+        help="Grating index: 0=FIRST(1800), 1=SECOND(1200), 2=THIRD(300)",
+    )
+    parser.add_argument(
+        "--slit-a",
+        type=float,
+        default=0.2,
+        help="Entrance slit A width in mm (negative to leave at current position)",
+    )
+    parser.add_argument(
+        "--slit-b",
+        type=float,
+        default=0.2,
+        help="Slit B width in mm (negative to leave at current position)",
     )
     parser.add_argument(
         "--test-grating", action="store_true", help="Test grating switching (slow)"
