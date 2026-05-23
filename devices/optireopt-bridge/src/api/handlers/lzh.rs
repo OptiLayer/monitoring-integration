@@ -8,10 +8,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use lzh_vm::{CoatingPlan, LayerSpec, Measurement, SharedSession, State as LzhState};
+use serde_json::Value;
 
-use crate::api::models::{
-    LzhAckResponse, LzhMeasurementRequest, LzhRecipeRequest, LzhStateResponse,
-};
+use crate::api::lzh_broadcaster;
+use crate::api::models::{LzhAckResponse, LzhMeasurementRequest, LzhRecipeRequest};
 use crate::service::state::AppState;
 
 fn state_name(s: LzhState) -> &'static str {
@@ -29,22 +29,9 @@ fn lzh_or_503(state: &AppState) -> Result<SharedSession, StatusCode> {
     state.lzh.clone().ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
-pub async fn get_state(
-    State(state): State<AppState>,
-) -> Result<Json<LzhStateResponse>, StatusCode> {
+pub async fn get_state(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
     let lzh = lzh_or_503(&state)?;
-    let s = lzh.lock().await;
-    let m = s.measurement();
-    Ok(Json(LzhStateResponse {
-        state: state_name(s.state()),
-        current_layer: s.current_layer(),
-        heartbeat: s.heartbeat(),
-        layers: s.plan().layers.len() as u16,
-        current_thickness: m.current_thickness,
-        current_rate: m.current_rate,
-        mean_rate: m.mean_rate,
-        remaining_time: m.remaining_time,
-    }))
+    Ok(Json(lzh_broadcaster::snapshot(&lzh).await))
 }
 
 pub async fn set_recipe(

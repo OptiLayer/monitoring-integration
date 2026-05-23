@@ -73,6 +73,30 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     <button id="btn-stop" class="danger">Stop</button>
   </div>
 </header>
+<section id="lzh-panel" style="display:none; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border);">
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;">
+    <div>
+      <div style="color: var(--muted); font-size: 11px; margin-bottom: 4px;">PCS → bridge</div>
+      <div>Deposit: <b id="pcs-deposit">—</b></div>
+      <div>ACP: <b id="pcs-acp">—</b></div>
+      <div>AutoScaling: <b id="pcs-autoscaling">—</b></div>
+    </div>
+    <div>
+      <div style="color: var(--muted); font-size: 11px; margin-bottom: 4px;">measurement</div>
+      <div>thickness: <b id="meas-thick">—</b> nm</div>
+      <div>rate: <b id="meas-rate">—</b> nm/s</div>
+      <div>mean rate: <b id="meas-mean">—</b> nm/s</div>
+      <div>remaining: <b id="meas-rem">—</b> s</div>
+    </div>
+    <div>
+      <div style="color: var(--muted); font-size: 11px; margin-bottom: 4px;">current layer design</div>
+      <div>thickness: <b id="dsn-thick">—</b> nm</div>
+      <div>rate: <b id="dsn-rate">—</b> nm/s</div>
+      <div>n: <b id="dsn-n">—</b></div>
+      <div>λ: <b id="dsn-cwl">—</b> nm</div>
+    </div>
+  </div>
+</section>
 <main>
   <div id="chart-wrap"><canvas id="chart"></canvas></div>
 </main>
@@ -106,12 +130,30 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   let switchCount = 0;
   let lzhState = null;
 
+  const lzhPanel = document.getElementById('lzh-panel');
+  const pcsDeposit = document.getElementById('pcs-deposit');
+  const pcsAcp = document.getElementById('pcs-acp');
+  const pcsAutoscaling = document.getElementById('pcs-autoscaling');
+  const measThick = document.getElementById('meas-thick');
+  const measRate = document.getElementById('meas-rate');
+  const measMean = document.getElementById('meas-mean');
+  const measRem = document.getElementById('meas-rem');
+  const dsnThick = document.getElementById('dsn-thick');
+  const dsnRate = document.getElementById('dsn-rate');
+  const dsnN = document.getElementById('dsn-n');
+  const dsnCwl = document.getElementById('dsn-cwl');
+  function bool(v) { return v === true ? 'T' : v === false ? 'F' : '—'; }
+  function num(v, digits) {
+    if (v === null || v === undefined || !isFinite(v)) return '—';
+    return Number(v).toFixed(digits ?? 3);
+  }
   function applyLzh(snap) {
     if (!snap) {
       lzhPill.style.display = 'none';
       lzhLayerMeta.style.display = 'none';
       lzhHbMeta.style.display = 'none';
       lzhControls.classList.add('hidden');
+      lzhPanel.style.display = 'none';
       lzhState = null;
       return;
     }
@@ -119,6 +161,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     lzhPill.style.display = '';
     lzhLayerMeta.style.display = '';
     lzhHbMeta.style.display = '';
+    lzhPanel.style.display = '';
     lzhPill.className = 'pill lzh-' + snap.state;
     lzhPill.textContent = 'LZH: ' + snap.state.replace(/_/g, ' ');
     mLayer.textContent = snap.current_layer;
@@ -128,6 +171,28 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     btnCalComplete.disabled = snap.state !== 'calibrating';
     btnEndLayer.disabled = snap.state !== 'depositing';
     btnStop.disabled = snap.state === 'initializing' || snap.state === 'complete';
+
+    const pcs = snap.pcs || {};
+    pcsDeposit.textContent = bool(pcs.deposit);
+    pcsAcp.textContent = bool(pcs.acp);
+    pcsAutoscaling.textContent = bool(pcs.auto_scaling);
+
+    const m = snap.measurement || {};
+    measThick.textContent = num(m.current_thickness);
+    measRate.textContent = num(m.current_rate, 4);
+    measMean.textContent = num(m.mean_rate, 4);
+    measRem.textContent = num(m.remaining_time, 1);
+
+    const d = snap.design;
+    if (d) {
+      dsnThick.textContent = num(d.design_thickness);
+      dsnRate.textContent = num(d.design_rate, 4);
+      dsnN.textContent = d.n_index ?? '—';
+      dsnCwl.textContent = num(d.central_wavelength);
+    } else {
+      dsnThick.textContent = '—'; dsnRate.textContent = '—';
+      dsnN.textContent = '—'; dsnCwl.textContent = '—';
+    }
   }
 
   async function lzhPost(path) {

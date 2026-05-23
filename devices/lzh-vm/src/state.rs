@@ -64,6 +64,7 @@ pub struct LzhSession {
     current_layer: u16,
     measurement: Measurement,
     last_in_deposit: bool,
+    last_in_acp: bool,
     last_in_auto_scaling: bool,
 }
 
@@ -76,7 +77,16 @@ impl LzhSession {
             current_layer: 0,
             measurement: Measurement::default(),
             last_in_deposit: false,
+            last_in_acp: false,
             last_in_auto_scaling: false,
+        }
+    }
+
+    pub fn last_in_frame(&self) -> InFrame {
+        InFrame {
+            deposit: self.last_in_deposit,
+            acp: self.last_in_acp,
+            auto_scaling: self.last_in_auto_scaling,
         }
     }
 
@@ -162,6 +172,7 @@ impl LzhSession {
         let deposit_fell = !frame.deposit && self.last_in_deposit;
         self.last_in_auto_scaling = frame.auto_scaling;
         self.last_in_deposit = frame.deposit;
+        self.last_in_acp = frame.acp;
 
         if auto_scaling_rose && matches!(self.state, State::Ready) {
             self.state = State::Calibrating;

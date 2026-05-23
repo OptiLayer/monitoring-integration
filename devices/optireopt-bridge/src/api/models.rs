@@ -99,18 +99,6 @@ pub struct LzhMeasurementRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct LzhStateResponse {
-    pub state: &'static str,
-    pub current_layer: u16,
-    pub heartbeat: u16,
-    pub layers: u16,
-    pub current_thickness: f64,
-    pub current_rate: f64,
-    pub mean_rate: f64,
-    pub remaining_time: f64,
-}
-
-#[derive(Debug, Serialize)]
 pub struct LzhAckResponse {
     pub ok: bool,
     pub state: &'static str,
