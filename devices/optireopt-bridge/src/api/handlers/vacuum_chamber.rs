@@ -26,11 +26,28 @@ pub async fn set_material(
         device.material_switches = device.material_switches.saturating_add(1);
     }
 
-    tracing::info!(
-        material = %request.material,
-        fraction = ?request.fraction,
-        "auto-switch from OptiMonitor (no-op on real hardware)"
-    );
+    // OptiMonitor's dt_switch reaching zero is the layer-end decision. Push it
+    // straight into the LZH session so PCS sees a TerminateLayer pulse on the
+    // wire. force_end_of_layer() is a no-op outside Depositing, so calls before
+    // the first deposit (e.g. setting initial material) cost nothing.
+    if let Some(lzh) = &state.lzh {
+        let mut s = lzh.lock().await;
+        let before = s.state();
+        s.force_end_of_layer();
+        tracing::info!(
+            material = %request.material,
+            fraction = ?request.fraction,
+            lzh_before = ?before,
+            lzh_after = ?s.state(),
+            "auto-switch from OptiMonitor -> LZH force_end_of_layer",
+        );
+    } else {
+        tracing::info!(
+            material = %request.material,
+            fraction = ?request.fraction,
+            "auto-switch from OptiMonitor (no LZH transport configured)",
+        );
+    }
 
     let _ = state.broadcast_tx.send(json!({
         "type": "material_changed",
@@ -45,18 +62,37 @@ pub async fn set_material(
 }
 
 pub async fn start_deposition(State(state): State<AppState>) -> Json<DepositionResponse> {
-    let mut device = state.device.write().await;
-    device.is_depositing = true;
-    tracing::info!("deposition start (no-op)");
+    {
+        let mut device = state.device.write().await;
+        device.is_depositing = true;
+    }
+    if let Some(lzh) = &state.lzh {
+        let mut s = lzh.lock().await;
+        s.mark_initialized();
+        tracing::info!(
+            "deposition start -> LZH mark_initialized, state={:?}",
+            s.state()
+        );
+    } else {
+        tracing::info!("deposition start (no LZH transport configured)");
+    }
     Json(DepositionResponse {
         status: "running".to_string(),
     })
 }
 
 pub async fn stop_deposition(State(state): State<AppState>) -> Json<DepositionResponse> {
-    let mut device = state.device.write().await;
-    device.is_depositing = false;
-    tracing::info!("deposition stop (no-op)");
+    {
+        let mut device = state.device.write().await;
+        device.is_depositing = false;
+    }
+    if let Some(lzh) = &state.lzh {
+        let mut s = lzh.lock().await;
+        s.mark_process_complete();
+        tracing::info!("deposition stop -> LZH mark_process_complete");
+    } else {
+        tracing::info!("deposition stop (no LZH transport configured)");
+    }
     Json(DepositionResponse {
         status: "stopped".to_string(),
     })

@@ -63,3 +63,56 @@ pub struct VacuumChamberStatusResponse {
 pub struct DepositionResponse {
     pub status: String,
 }
+
+// ============= LZH (real vacuum-machine integration) =============
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LzhLayerSpec {
+    pub design_thickness: f64,
+    pub design_rate: f64,
+    #[serde(default)]
+    pub n_index: u16,
+    #[serde(default)]
+    pub central_wavelength: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LzhRecipeRequest {
+    pub layers: Vec<LzhLayerSpec>,
+    #[serde(default = "default_test_glass")]
+    pub current_test_glass: u16,
+}
+
+fn default_test_glass() -> u16 {
+    1
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LzhMeasurementRequest {
+    pub current_thickness: f64,
+    #[serde(default)]
+    pub current_rate: f64,
+    #[serde(default)]
+    pub mean_rate: f64,
+    #[serde(default)]
+    pub remaining_time: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LzhStateResponse {
+    pub state: &'static str,
+    pub current_layer: u16,
+    pub heartbeat: u16,
+    pub layers: u16,
+    pub current_thickness: f64,
+    pub current_rate: f64,
+    pub mean_rate: f64,
+    pub remaining_time: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LzhAckResponse {
+    pub ok: bool,
+    pub state: &'static str,
+    pub current_layer: u16,
+}

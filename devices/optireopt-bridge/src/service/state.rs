@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use lzh_vm::SharedSession;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 
@@ -36,4 +37,6 @@ pub struct AppState {
     pub device: SharedDevice,
     pub broadcast_tx: broadcast::Sender<serde_json::Value>,
     pub monitoring: Arc<MonitoringClient>,
+    /// `None` when `--pcs-addr` was not provided; LZH endpoints respond 503.
+    pub lzh: Option<SharedSession>,
 }

@@ -14,11 +14,32 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     // Send init snapshot so the dashboard can render immediately.
     let init = {
         let device = state.device.read().await;
+        let lzh = match &state.lzh {
+            Some(s) => {
+                let session = s.lock().await;
+                let st = match session.state() {
+                    lzh_vm::State::Initializing => "initializing",
+                    lzh_vm::State::Ready => "ready",
+                    lzh_vm::State::Calibrating => "calibrating",
+                    lzh_vm::State::Depositing => "depositing",
+                    lzh_vm::State::EndOfLayerPulse => "end_of_layer_pulse",
+                    lzh_vm::State::Complete => "complete",
+                };
+                Some(json!({
+                    "state": st,
+                    "current_layer": session.current_layer(),
+                    "heartbeat": session.heartbeat(),
+                    "layers": session.plan().layers.len() as u16,
+                }))
+            }
+            None => None,
+        };
         json!({
             "type": "init",
             "scans_received": device.scans_received,
             "latest_frame": device.latest_frame,
             "last_frame_at": device.last_frame_at,
+            "lzh": lzh,
         })
     };
     if socket

@@ -28,8 +28,20 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
   .pill.connected::before { background: var(--green); }
   .pill.disconnected::before { background: var(--red); }
+  .pill.lzh-initializing::before, .pill.lzh-calibrating::before { background: #d29922; }
+  .pill.lzh-ready::before { background: var(--accent); }
+  .pill.lzh-depositing::before { background: var(--green); }
+  .pill.lzh-end_of_layer_pulse::before { background: #db61a2; }
+  .pill.lzh-complete::before { background: var(--muted); }
   .meta { color: var(--muted); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
   .meta b { color: var(--text); font-weight: 500; }
+  .lzh-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .lzh-controls button { background: #20262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .lzh-controls button:hover { background: #2a313c; }
+  .lzh-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .lzh-controls button.primary { background: var(--accent); color: #0e1116; border-color: var(--accent); }
+  .lzh-controls button.danger { background: var(--red); color: #0e1116; border-color: var(--red); }
+  .lzh-controls.hidden { display: none; }
   main { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   #chart-wrap { flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; min-height: 0; }
   #chart { display: block; width: 100%; height: 100%; }
@@ -41,6 +53,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
 <header>
   <h1>OptiReOpt Bridge</h1>
   <span id="src-pill" class="pill">source: connecting…</span>
+  <span id="lzh-pill" class="pill" style="display:none">LZH: —</span>
   <div class="meta">
     <span>last frame: <b id="m-ts">—</b></span>
     <span>n: <b id="m-n">0</b></span>
@@ -51,6 +64,13 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     <span>rt: <b id="m-rt">—</b></span>
     <span>material: <b id="m-mat">—</b></span>
     <span>switches: <b id="m-sw">0</b></span>
+    <span id="lzh-layer-meta" style="display:none">layer: <b id="m-layer">—</b>/<b id="m-layers">—</b></span>
+    <span id="lzh-hb-meta" style="display:none">hb: <b id="m-hb">—</b></span>
+  </div>
+  <div id="lzh-controls" class="lzh-controls hidden">
+    <button id="btn-cal-complete">Mark Cal Complete</button>
+    <button id="btn-end-layer">End Layer Now</button>
+    <button id="btn-stop" class="danger">Stop</button>
   </div>
 </header>
 <main>
@@ -73,7 +93,52 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   const mRt = document.getElementById('m-rt');
   const mMat = document.getElementById('m-mat');
   const mSw = document.getElementById('m-sw');
+  const lzhPill = document.getElementById('lzh-pill');
+  const lzhLayerMeta = document.getElementById('lzh-layer-meta');
+  const lzhHbMeta = document.getElementById('lzh-hb-meta');
+  const lzhControls = document.getElementById('lzh-controls');
+  const mLayer = document.getElementById('m-layer');
+  const mLayers = document.getElementById('m-layers');
+  const mHb = document.getElementById('m-hb');
+  const btnCalComplete = document.getElementById('btn-cal-complete');
+  const btnEndLayer = document.getElementById('btn-end-layer');
+  const btnStop = document.getElementById('btn-stop');
   let switchCount = 0;
+  let lzhState = null;
+
+  function applyLzh(snap) {
+    if (!snap) {
+      lzhPill.style.display = 'none';
+      lzhLayerMeta.style.display = 'none';
+      lzhHbMeta.style.display = 'none';
+      lzhControls.classList.add('hidden');
+      lzhState = null;
+      return;
+    }
+    lzhState = snap.state;
+    lzhPill.style.display = '';
+    lzhLayerMeta.style.display = '';
+    lzhHbMeta.style.display = '';
+    lzhPill.className = 'pill lzh-' + snap.state;
+    lzhPill.textContent = 'LZH: ' + snap.state.replace(/_/g, ' ');
+    mLayer.textContent = snap.current_layer;
+    mLayers.textContent = snap.layers || '—';
+    mHb.textContent = snap.heartbeat;
+    lzhControls.classList.remove('hidden');
+    btnCalComplete.disabled = snap.state !== 'calibrating';
+    btnEndLayer.disabled = snap.state !== 'depositing';
+    btnStop.disabled = snap.state === 'initializing' || snap.state === 'complete';
+  }
+
+  async function lzhPost(path) {
+    try {
+      const r = await fetch(path, { method: 'POST' });
+      if (!r.ok) console.warn(path, r.status);
+    } catch (e) { console.warn(path, e); }
+  }
+  btnCalComplete.addEventListener('click', () => lzhPost('/vacuum_chamber/lzh/calibration_complete'));
+  btnEndLayer.addEventListener('click', () => lzhPost('/vacuum_chamber/lzh/end_layer'));
+  btnStop.addEventListener('click', () => lzhPost('/vacuum_chamber/stop'));
 
   let latest = null;          // { wavelengths, values, rt_data, timestamp }
   let scansReceived = 0;
@@ -235,6 +300,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       if (msg.type === 'init') {
         scansReceived = msg.scans_received || 0;
         mN.textContent = String(scansReceived);
+        applyLzh(msg.lzh);
         if (msg.latest_frame) {
           // Init latest_frame uses the ingest-side names (wavelength/values).
           applyFrame({
@@ -258,6 +324,8 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
         const frac = (msg.fraction === null || msg.fraction === undefined) ? '' : ` (${msg.fraction}%)`;
         mMat.textContent = (msg.material || '—') + frac;
         mSw.textContent = String(switchCount);
+      } else if (msg.type === 'lzh_state') {
+        applyLzh(msg);
       }
     };
     ws.onclose = () => {
