@@ -54,6 +54,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   <h1>OptiReOpt Bridge</h1>
   <span id="src-pill" class="pill">source: connecting…</span>
   <span id="lzh-pill" class="pill" style="display:none">LZH: —</span>
+  <span id="lzh-link-pill" class="pill" style="display:none">PCS link: —</span>
   <div class="meta">
     <span>last frame: <b id="m-ts">—</b></span>
     <span>n: <b id="m-n">0</b></span>
@@ -118,6 +119,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   const mMat = document.getElementById('m-mat');
   const mSw = document.getElementById('m-sw');
   const lzhPill = document.getElementById('lzh-pill');
+  const lzhLinkPill = document.getElementById('lzh-link-pill');
   const lzhLayerMeta = document.getElementById('lzh-layer-meta');
   const lzhHbMeta = document.getElementById('lzh-hb-meta');
   const lzhControls = document.getElementById('lzh-controls');
@@ -129,6 +131,20 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   const btnStop = document.getElementById('btn-stop');
   let switchCount = 0;
   let lzhState = null;
+  let lzhLastInFrames = 0;
+  let lzhLastInFramesAt = 0;
+  function refreshLzhLink() {
+    if (!lzhState) return;
+    const elapsed = lzhLastInFramesAt > 0 ? (performance.now() - lzhLastInFramesAt) : Infinity;
+    const stale = elapsed > 1500;
+    lzhLinkPill.style.display = '';
+    lzhLinkPill.classList.toggle('connected', !stale);
+    lzhLinkPill.classList.toggle('disconnected', stale);
+    lzhLinkPill.textContent = stale
+      ? 'PCS link: no frames'
+      : `PCS link: ${(elapsed/1000).toFixed(1)}s ago`;
+  }
+  setInterval(refreshLzhLink, 500);
 
   const lzhPanel = document.getElementById('lzh-panel');
   const pcsDeposit = document.getElementById('pcs-deposit');
@@ -154,10 +170,16 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       lzhHbMeta.style.display = 'none';
       lzhControls.classList.add('hidden');
       lzhPanel.style.display = 'none';
+      lzhLinkPill.style.display = 'none';
       lzhState = null;
       return;
     }
     lzhState = snap.state;
+    if (typeof snap.in_frames_received === 'number' && snap.in_frames_received !== lzhLastInFrames) {
+      lzhLastInFrames = snap.in_frames_received;
+      lzhLastInFramesAt = performance.now();
+    }
+    refreshLzhLink();
     lzhPill.style.display = '';
     lzhLayerMeta.style.display = '';
     lzhHbMeta.style.display = '';

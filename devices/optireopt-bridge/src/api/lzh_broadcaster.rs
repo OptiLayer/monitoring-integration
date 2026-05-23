@@ -34,6 +34,8 @@ pub async fn snapshot(session: &SharedSession) -> Value {
         "current_layer": s.current_layer(),
         "heartbeat": s.heartbeat(),
         "layers": s.plan().layers.len() as u16,
+        "in_frames_received": s.in_frames_received(),
+        "out_frames_emitted": s.out_frames_emitted(),
         "pcs": {
             "deposit": pcs.deposit,
             "acp": pcs.acp,

@@ -39,6 +39,7 @@ pub async fn set_recipe(
     Json(req): Json<LzhRecipeRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let lzh = lzh_or_503(&state)?;
+    let n_layers = req.layers.len();
     let plan = CoatingPlan {
         layers: req
             .layers
@@ -54,8 +55,13 @@ pub async fn set_recipe(
     };
     let mut s = lzh.lock().await;
     if !s.set_plan(plan) {
+        tracing::warn!(state = ?s.state(), "POST /vacuum_chamber/lzh/recipe rejected: not in Initializing/Ready");
         return Err(StatusCode::CONFLICT);
     }
+    tracing::info!(
+        layers = n_layers,
+        "POST /vacuum_chamber/lzh/recipe accepted"
+    );
     Ok(Json(ack(&s)))
 }
 
@@ -63,6 +69,7 @@ pub async fn start(State(state): State<AppState>) -> Result<Json<LzhAckResponse>
     let lzh = lzh_or_503(&state)?;
     let mut s = lzh.lock().await;
     s.mark_initialized();
+    tracing::info!(state = ?s.state(), "POST /vacuum_chamber/lzh/start");
     Ok(Json(ack(&s)))
 }
 
@@ -72,6 +79,7 @@ pub async fn calibration_complete(
     let lzh = lzh_or_503(&state)?;
     let mut s = lzh.lock().await;
     s.mark_calibration_complete();
+    tracing::info!(state = ?s.state(), "POST /vacuum_chamber/lzh/calibration_complete");
     Ok(Json(ack(&s)))
 }
 
@@ -87,6 +95,12 @@ pub async fn measurement(
         mean_rate: req.mean_rate,
         remaining_time: req.remaining_time,
     });
+    tracing::debug!(
+        current_thickness = req.current_thickness,
+        current_rate = req.current_rate,
+        state = ?s.state(),
+        "POST /vacuum_chamber/lzh/measurement",
+    );
     Ok(Json(ack(&s)))
 }
 
@@ -94,6 +108,7 @@ pub async fn end_layer(State(state): State<AppState>) -> Result<Json<LzhAckRespo
     let lzh = lzh_or_503(&state)?;
     let mut s = lzh.lock().await;
     s.force_end_of_layer();
+    tracing::info!(state = ?s.state(), "POST /vacuum_chamber/lzh/end_layer");
     Ok(Json(ack(&s)))
 }
 

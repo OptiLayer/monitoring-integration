@@ -66,6 +66,8 @@ pub struct LzhSession {
     last_in_deposit: bool,
     last_in_acp: bool,
     last_in_auto_scaling: bool,
+    in_frames_received: u64,
+    out_frames_emitted: u64,
 }
 
 impl LzhSession {
@@ -79,7 +81,17 @@ impl LzhSession {
             last_in_deposit: false,
             last_in_acp: false,
             last_in_auto_scaling: false,
+            in_frames_received: 0,
+            out_frames_emitted: 0,
         }
+    }
+
+    pub fn in_frames_received(&self) -> u64 {
+        self.in_frames_received
+    }
+
+    pub fn out_frames_emitted(&self) -> u64 {
+        self.out_frames_emitted
     }
 
     pub fn last_in_frame(&self) -> InFrame {
@@ -123,18 +135,20 @@ impl LzhSession {
     /// Host signals that startup is finished and we can advertise Ready=T.
     pub fn mark_initialized(&mut self) {
         if !matches!(self.state, State::Initializing) {
+            tracing::debug!(state = ?self.state, "mark_initialized called outside Initializing; ignored");
             return;
         }
-        self.state = State::Ready;
+        self.transition(State::Ready, "host mark_initialized");
         self.current_layer = 1;
     }
 
     /// Host signals that Data Correction has finished. Returns to Ready.
     pub fn mark_calibration_complete(&mut self) {
         if !matches!(self.state, State::Calibrating) {
+            tracing::debug!(state = ?self.state, "mark_calibration_complete called outside Calibrating; ignored");
             return;
         }
-        self.state = State::Ready;
+        self.transition(State::Ready, "host mark_calibration_complete");
     }
 
     /// Inject the latest spectrometer measurement. While Depositing, this also
@@ -152,7 +166,10 @@ impl LzhSession {
         if m.current_thickness < spec.design_thickness {
             return;
         }
-        self.state = State::EndOfLayerPulse;
+        self.transition(
+            State::EndOfLayerPulse,
+            "measurement reached design_thickness",
+        );
     }
 
     /// Force the current layer to end without waiting for a measurement to
@@ -160,26 +177,41 @@ impl LzhSession {
     /// OptiMonitor's optimization loop) makes the layer-done decision.
     pub fn force_end_of_layer(&mut self) {
         if !matches!(self.state, State::Depositing) {
+            tracing::debug!(state = ?self.state, "force_end_of_layer ignored outside Depositing");
             return;
         }
-        self.state = State::EndOfLayerPulse;
+        self.transition(State::EndOfLayerPulse, "host force_end_of_layer");
     }
 
     /// Consume an incoming PCS frame. Performs edge-triggered transitions.
     pub fn on_in_frame(&mut self, frame: InFrame) {
+        self.in_frames_received = self.in_frames_received.saturating_add(1);
+
         let auto_scaling_rose = frame.auto_scaling && !self.last_in_auto_scaling;
+        let auto_scaling_fell = !frame.auto_scaling && self.last_in_auto_scaling;
         let deposit_rose = frame.deposit && !self.last_in_deposit;
         let deposit_fell = !frame.deposit && self.last_in_deposit;
+        let acp_changed = frame.acp != self.last_in_acp;
         self.last_in_auto_scaling = frame.auto_scaling;
         self.last_in_deposit = frame.deposit;
         self.last_in_acp = frame.acp;
 
+        if auto_scaling_rose || auto_scaling_fell || deposit_rose || deposit_fell || acp_changed {
+            tracing::info!(
+                deposit = frame.deposit,
+                acp = frame.acp,
+                auto_scaling = frame.auto_scaling,
+                state = ?self.state,
+                "PCS flags changed",
+            );
+        }
+
         if auto_scaling_rose && matches!(self.state, State::Ready) {
-            self.state = State::Calibrating;
+            self.transition(State::Calibrating, "PCS asserted AutoScaling");
             return;
         }
         if deposit_rose && matches!(self.state, State::Ready) {
-            self.state = State::Depositing;
+            self.transition(State::Depositing, "PCS asserted Deposit");
             return;
         }
         if !deposit_fell {
@@ -195,6 +227,7 @@ impl LzhSession {
     /// transport's emit schedule (observed ~4.6 Hz on the wire).
     pub fn emit(&mut self) -> OutFrame {
         self.heartbeat = self.heartbeat.wrapping_add(2);
+        self.out_frames_emitted = self.out_frames_emitted.saturating_add(1);
         let mut f = OutFrame {
             heartbeat: self.heartbeat,
             current_test_glass: self.plan.current_test_glass,
@@ -265,7 +298,10 @@ impl LzhSession {
     /// Host signals that the whole process is over (e.g. OptiMonitor stops the
     /// chamber). Holds [`State::Complete`] until the session is rebuilt.
     pub fn mark_process_complete(&mut self) {
-        self.state = State::Complete;
+        if matches!(self.state, State::Complete) {
+            return;
+        }
+        self.transition(State::Complete, "host mark_process_complete");
     }
 
     fn advance_after_layer(&mut self) {
@@ -273,12 +309,28 @@ impl LzhSession {
         // With an empty plan the host (e.g. OptiMonitor) drives completion
         // explicitly via mark_process_complete; never auto-finish here.
         if total > 0 && self.current_layer >= total {
-            self.state = State::Complete;
+            self.transition(State::Complete, "advance: last layer reached");
             return;
         }
-        self.current_layer += 1;
-        self.state = State::Ready;
+        let next = self.current_layer + 1;
+        self.current_layer = next;
         self.measurement = Measurement::default();
+        self.transition(State::Ready, "advance: next layer");
+    }
+
+    fn transition(&mut self, next: State, reason: &'static str) {
+        if self.state == next {
+            return;
+        }
+        tracing::info!(
+            from = ?self.state,
+            to = ?next,
+            layer = self.current_layer,
+            heartbeat = self.heartbeat,
+            reason,
+            "LZH state transition",
+        );
+        self.state = next;
     }
 }
 

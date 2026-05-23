@@ -94,17 +94,33 @@ async fn run_reader_once(session: &SharedSession, cfg: &TransportConfig) -> std:
     tracing::info!("PCS connected from {peer}");
 
     let mut buf = [0u8; FRAME_LEN];
-    loop {
-        stream.read_exact(&mut buf).await?;
+    let mut frames = 0u64;
+    let mut malformed = 0u64;
+    let result = loop {
+        match stream.read_exact(&mut buf).await {
+            Ok(_) => {}
+            Err(e) => break Err(e),
+        }
+        frames += 1;
         let frame = match InFrame::decode(&buf) {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!("dropping malformed PCS frame: {e}");
+                malformed += 1;
+                if malformed.is_power_of_two() {
+                    tracing::warn!(malformed, "dropping malformed PCS frame: {e}");
+                }
                 continue;
             }
         };
         session.lock().await.on_in_frame(frame);
-    }
+    };
+    tracing::info!(
+        peer = %peer,
+        frames_received = frames,
+        malformed,
+        "PCS reader connection ended",
+    );
+    result
 }
 
 async fn emitter_loop(session: SharedSession, cfg: TransportConfig) {
@@ -124,11 +140,21 @@ async fn run_emitter_once(session: &SharedSession, cfg: &TransportConfig) -> std
     let mut tick = interval(cfg.emit_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    loop {
+    let mut emitted = 0u64;
+    let result = loop {
         tick.tick().await;
         let frame = session.lock().await.emit();
-        stream.write_all(&frame.encode()).await?;
-    }
+        if let Err(e) = stream.write_all(&frame.encode()).await {
+            break Err(e);
+        }
+        emitted += 1;
+    };
+    tracing::info!(
+        peer = %cfg.pcs_addr,
+        frames_emitted = emitted,
+        "PCS emitter connection ended",
+    );
+    result
 }
 
 #[allow(dead_code)]
