@@ -22,12 +22,15 @@ Usage:
   horiba-test.exe [--icl-ip 127.0.0.1] [--icl-port 25010]
                   [--start-icl] [--wavelength 500]
                   [--exposure 1000] [--series-count 5]
+                  [--start-wl 500] [--end-wl 900]
+                  [--output readings.csv]
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -164,6 +167,49 @@ def print_spectrum_summary(label: str, spectrum: SpectrumData) -> None:
             print(f"  {wl[-1]:16.2f}  {intens[-1]:12.1f}")
 
 
+def write_spectra_csv(
+    path: str, labeled_spectra: list[tuple[str, SpectrumData]]
+) -> None:
+    """Write the full wavelength/intensity arrays for every captured spectrum.
+
+    Unlike the on-screen summary (which downsamples to ~50 rows), this writes
+    every single data point so nothing is averaged away. One row per point,
+    tagged with the step label so all readings live in a single CSV.
+    """
+    if not labeled_spectra:
+        print("\nNo spectra captured — nothing to write.")
+        return
+
+    total = 0
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "label",
+                "timestamp",
+                "center_wl_nm",
+                "exposure_ms",
+                "wavelength_nm",
+                "intensity",
+            ]
+        )
+        for label, spec in labeled_spectra:
+            for wl, intensity in zip(spec.wavelengths, spec.intensities):
+                writer.writerow(
+                    [
+                        label,
+                        spec.timestamp,
+                        f"{spec.center_wavelength:.2f}",
+                        spec.exposure_time_ms,
+                        f"{wl:.4f}",
+                        f"{intensity:.2f}",
+                    ]
+                )
+                total += 1
+
+    print(f"\nWrote {total} data points ({len(labeled_spectra)} spectra) to {path}")
+
+
 # ---------------------------------------------------------------------------
 # Test steps
 # ---------------------------------------------------------------------------
@@ -202,8 +248,8 @@ async def test_connect_and_discover(args: argparse.Namespace) -> DeviceManager:
 
 async def test_initialize_mono(
     mono: Monochromator,
-    slit_a_mm: float = 0.2,
-    slit_b_mm: float = 0.2,
+    slit_a_mm: float = 0.5,
+    slit_b_mm: float = 0.5,
 ) -> dict:
     """Step 2: Initialize monochromator, read configuration.
 
@@ -262,12 +308,14 @@ async def test_initialize_mono(
         except Exception as e:
             print(f"  Slit {slit.name}: read failed ({e})")
 
-    # Read shutter status
+    # Read shutter status. The acquisition shutter is controlled CCD-side via
+    # ccd.acquisition_start(open_shutter=...); this mono shutter is a separate,
+    # often-absent accessory, so a read failure here is informational only.
     try:
         shutter_pos = await mono.get_shutter_position(Monochromator.Shutter.FIRST)
         print(f"  Shutter status:     {shutter_pos}")
     except Exception as e:
-        print(f"  Shutter: not available ({e})")
+        print(f"  Shutter: no mono shutter (acquisition uses CCD shutter) [{e}]")
 
     # Read mirror positions
     for mirror in [Monochromator.Mirror.ENTRANCE, Monochromator.Mirror.EXIT]:
@@ -626,6 +674,7 @@ async def run_all_tests(args: argparse.Namespace) -> None:
     ccd = dm.charge_coupled_devices[0]
 
     results: list[tuple[str, str]] = [("1. Connect to ICL", "PASS")]
+    all_spectra: list[tuple[str, SpectrumData]] = []
     mono_ok = False
     ccd_ok = False
     chip_size: tuple[int, int] = (1024, 256)
@@ -684,6 +733,7 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         if ccd_ok:
             try:
                 light = await test_single_spectrum(ccd, center_wl, args.exposure)
+                all_spectra.append(("6. Single spectrum", light))
                 results.append(("6. Single spectrum", "PASS"))
             except Exception as e:
                 results.append(("6. Single spectrum", f"FAIL: {e}"))
@@ -694,9 +744,16 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         # Step 7: Range scan (requires mono + CCD)
         if ccd_ok and mono_ok:
             try:
-                await test_range_scan(
+                range_scan = await test_range_scan(
                     ccd, mono, args.start_wl, args.end_wl, args.exposure
                 )
+                if range_scan is not None:
+                    all_spectra.append(
+                        (
+                            f"7. Range scan {args.start_wl:.0f}-{args.end_wl:.0f}nm",
+                            range_scan,
+                        )
+                    )
                 results.append(("7. Range scan", "PASS"))
             except Exception as e:
                 results.append(("7. Range scan", f"FAIL: {e}"))
@@ -708,6 +765,7 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         if ccd_ok:
             try:
                 dark = await test_dark_frame(ccd, center_wl, args.exposure)
+                all_spectra.append(("8. Dark frame", dark))
                 results.append(("8. Dark frame", "PASS"))
             except Exception as e:
                 results.append(("8. Dark frame", f"FAIL: {e}"))
@@ -718,9 +776,11 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         # Step 9: Series acquisition
         if ccd_ok:
             try:
-                await test_series_acquisition(
+                series = await test_series_acquisition(
                     ccd, center_wl, args.exposure, args.series_count
                 )
+                for i, spec in enumerate(series):
+                    all_spectra.append((f"9. Series acquisition [{i + 1}]", spec))
                 results.append(("9. Series acquisition", "PASS"))
             except Exception as e:
                 results.append(("9. Series acquisition", f"FAIL: {e}"))
@@ -731,9 +791,11 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         # Step 10: MultiAcq mode
         if ccd_ok and args.series_count >= 2:
             try:
-                await test_multi_acquisition(
+                multi = await test_multi_acquisition(
                     ccd, center_wl, args.exposure, min(args.series_count, 5)
                 )
+                for i, spec in enumerate(multi):
+                    all_spectra.append((f"10. MultiAcq [{i + 1}]", spec))
                 results.append(("10. MultiAcq mode", "PASS"))
             except Exception as e:
                 results.append(("10. MultiAcq mode", f"FAIL: {e}"))
@@ -765,6 +827,13 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"  Mono close error: {e}")
         await dm.stop()
+
+        # Persist every reading to disk even if a later step failed above.
+        if args.output:
+            try:
+                write_spectra_csv(args.output, all_spectra)
+            except Exception as e:
+                print(f"  Failed to write output file: {e}")
 
     # Print summary
     print("\n" + "=" * 60)
@@ -805,10 +874,10 @@ def main():
         "--series-count", type=int, default=5, help="Number of spectra in series test"
     )
     parser.add_argument(
-        "--start-wl", type=float, default=400.0, help="Range scan start wavelength (nm)"
+        "--start-wl", type=float, default=500.0, help="Range scan start wavelength (nm)"
     )
     parser.add_argument(
-        "--end-wl", type=float, default=600.0, help="Range scan end wavelength (nm)"
+        "--end-wl", type=float, default=900.0, help="Range scan end wavelength (nm)"
     )
     parser.add_argument(
         "--grating",
@@ -819,17 +888,23 @@ def main():
     parser.add_argument(
         "--slit-a",
         type=float,
-        default=0.2,
+        default=0.5,
         help="Entrance slit A width in mm (negative to leave at current position)",
     )
     parser.add_argument(
         "--slit-b",
         type=float,
-        default=0.2,
+        default=0.5,
         help="Slit B width in mm (negative to leave at current position)",
     )
     parser.add_argument(
         "--test-grating", action="store_true", help="Test grating switching (slow)"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Write all spectra (full wavelength/intensity arrays) to this CSV file",
     )
 
     args = parser.parse_args()
