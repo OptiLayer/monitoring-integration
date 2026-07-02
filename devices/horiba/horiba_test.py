@@ -729,6 +729,16 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         else:
             results.append(("5. Configure CCD", "SKIP (CCD not initialized)"))
 
+        # Flush accumulated charge with a throwaway frame. The first readout
+        # after setup dumps charge collected during configuration, which
+        # inflates (and can saturate) the first real acquisition.
+        if ccd_ok:
+            try:
+                print("\n  Discarding charge-flush frame before first read...")
+                await acquire_spectrum(ccd, args.exposure, open_shutter=True)
+            except Exception as e:
+                print(f"  Charge-flush frame skipped: {e}")
+
         # Step 6: Single spectrum
         if ccd_ok:
             try:
@@ -760,6 +770,18 @@ async def run_all_tests(args: argparse.Namespace) -> None:
                 print(f"\n  ** Range scan failed: {e}")
         else:
             results.append(("7. Range scan", "SKIP (need mono + CCD)"))
+
+        # The range scan leaves the mono parked at its last center wavelength
+        # (the far end of the scan). Move back to the target so the remaining
+        # steps measure the sample instead of a dark region.
+        if mono_ok and ccd_ok:
+            try:
+                await mono.move_to_target_wavelength(center_wl)
+                await wait_mono_ready(mono)
+                await ccd.set_center_wavelength(mono.id(), center_wl)
+                print(f"\n  Restored mono to {center_wl:.1f} nm after range scan")
+            except Exception as e:
+                print(f"\n  Could not restore mono after range scan: {e}")
 
         # Step 8: Dark frame
         if ccd_ok:
