@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from horiba_sdk.core.acquisition_format import AcquisitionFormat
 from horiba_sdk.core.timer_resolution import TimerResolution
-from horiba_sdk.core.stitching import LinearSpectraStitch
+from horiba_sdk.core.stitching import LabSpec6SpectraStitch
 from horiba_sdk.core.x_axis_conversion_type import XAxisConversionType
 from horiba_sdk.devices.device_manager import DeviceManager
 from horiba_sdk.devices.single_devices.monochromator import Monochromator
@@ -546,17 +546,21 @@ async def test_range_scan(
     start_wl: float,
     end_wl: float,
     exposure_ms: int,
+    pixel_overlap: int = 400,
 ) -> SpectrumData | None:
     """Step 10: Range scan — acquire across a wide wavelength range and stitch."""
     print("\n" + "=" * 60)
     print(f"STEP 10: Range scan ({start_wl:.0f} - {end_wl:.0f} nm)")
     print("=" * 60)
 
-    # Ask SDK to calculate center wavelengths needed to cover the range
-    pixel_overlap = 50
+    # Ask SDK to calculate center wavelengths needed to cover the range.
+    # Heavy overlap makes each frame contribute mostly its high-efficiency
+    # center, so the weighted-average stitch down-weights the low-efficiency
+    # frame edges that otherwise cause seams and a distorted shape.
     center_wavelengths = await ccd.range_mode_center_wavelengths(
         mono.id(), start_wl, end_wl, pixel_overlap
     )
+    print(f"  Pixel overlap: {pixel_overlap}")
     print(f"  Center wavelengths: {len(center_wavelengths)} positions")
     for i, cwl in enumerate(center_wavelengths):
         print(f"    [{i}] {cwl:.1f} nm")
@@ -608,8 +612,11 @@ async def test_range_scan(
         print("  No captures — range scan failed")
         return None
 
-    # Stitch spectra together
-    stitch = LinearSpectraStitch(captures)
+    # Weighted-average stitch (LabSpec6): ramps across the overlap so there is
+    # no hard seam. Combined with the heavy pixel overlap above, the
+    # low-efficiency frame edges are down-weighted in favour of each frame's
+    # flat center.
+    stitch = LabSpec6SpectraStitch(captures)
     stitched = stitch.stitched_spectra()
     wl_all = np.array(stitched[0], dtype=np.float64)
     intens_all = np.array(stitched[1][0], dtype=np.float64)
@@ -755,7 +762,12 @@ async def run_all_tests(args: argparse.Namespace) -> None:
         if ccd_ok and mono_ok:
             try:
                 range_scan = await test_range_scan(
-                    ccd, mono, args.start_wl, args.end_wl, args.exposure
+                    ccd,
+                    mono,
+                    args.start_wl,
+                    args.end_wl,
+                    args.exposure,
+                    args.scan_overlap,
                 )
                 if range_scan is not None:
                     all_spectra.append(
@@ -927,6 +939,13 @@ def main():
         type=str,
         default=None,
         help="Write all spectra (full wavelength/intensity arrays) to this CSV file",
+    )
+    parser.add_argument(
+        "--scan-overlap",
+        type=int,
+        default=400,
+        help="Range-scan pixel overlap between frames "
+        "(higher = smoother stitch, more frames, slower scan)",
     )
 
     args = parser.parse_args()
