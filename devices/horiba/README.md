@@ -190,5 +190,13 @@ devices/horiba/
 │   ├── test_driver.py        # Driver with mocked SDK
 │   └── test_server.py        # REST endpoint contracts
 ├── pyproject.toml
+├── RANGE_SCAN.md       # Broadband range-scan shape: root cause + grating/overlap fix
 └── README.md
 ```
+
+## Broadband range scan
+
+If the wide-range broadband spectrum comes out the wrong shape (inverted, seams, or a
+sawtooth), see **[RANGE_SCAN.md](RANGE_SCAN.md)**. Short version: use grating 1
+(1200 g/mm) with a high `--scan-overlap` (e.g. 800) so the stitch samples frame
+centers, not the low-efficiency frame edges.
