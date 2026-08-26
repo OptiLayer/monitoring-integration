@@ -39,8 +39,10 @@ impl DeviceState {
         self.monitoring_api_url.is_some() && self.spectrometer_id.is_some()
     }
 
+    /// Stream to the monitoring API whenever registered — shutter state is
+    /// irrelevant, the operator needs the live signal before pressing Start.
     pub fn should_process_data(&self) -> bool {
-        self.is_running || self.is_depositing
+        self.is_registered()
     }
 }
 
@@ -93,9 +95,12 @@ mod tests {
     }
 
     #[test]
-    fn test_should_process_data() {
+    fn test_should_process_data_when_registered_regardless_of_shutter() {
         let mut state = DeviceState::default();
         assert!(!state.should_process_data());
+        state.monitoring_api_url = Some("http://localhost:8200".to_string());
+        state.spectrometer_id = Some("test-id".to_string());
+        assert!(state.should_process_data());
         state.is_running = true;
         assert!(state.should_process_data());
     }

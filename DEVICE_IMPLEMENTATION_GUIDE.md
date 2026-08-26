@@ -161,7 +161,7 @@ async def get_control_wavelength():
 
 ### 5. Sending Spectral Data to Monitoring
 
-**When**: Your device should continuously send spectral data while deposition is running.
+**When**: Your device should continuously send spectral data from the moment it is registered (after `POST /register`), regardless of whether deposition is running. OptiMonitor shows the raw signal before Start so the operator can verify the optical path, and only fits scans while the chamber is running.
 
 **Endpoint**: `POST {monitoring_api_url}/spectrometers/{spectrometer_id}/data`
 
@@ -396,7 +396,7 @@ POST http://localhost:8200/vacuum-chambers/{id}/start
 This triggers:
 1. Monitoring calls `POST /vacuum_chamber/start` on your device
 2. Your device starts the deposition process
-3. Your device begins continuously sending spectral data
+3. Monitoring begins fitting the spectral data your device is already sending
 
 ### 6. During Deposition
 Your device repeatedly sends data:
