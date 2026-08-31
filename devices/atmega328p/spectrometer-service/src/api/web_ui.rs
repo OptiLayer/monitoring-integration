@@ -65,6 +65,7 @@ canvas { width: 100%; height: 100%; display: block; }
     <div class="stat"><span class="stat-label">Actual</span><span class="stat-value" id="wl-actual">-</span></div>
     <div class="stat"><span class="stat-label">Status</span><span class="stat-value"><span class="badge" id="mono-badge">-</span></span></div>
     <div class="settings-note" id="mono-instrument"></div>
+    <div class="settings-note" id="mono-range"></div>
     <div class="mono-err" id="mono-error" style="display:none"></div>
   </div>
 
@@ -238,6 +239,15 @@ function onMono(m) {
     el('wl-input').value = m.control_wavelength.toFixed(1);
   }
   el('mono-instrument').textContent = m.instrument || '';
+
+  // Bound the input by what the installed gratings can actually reach.
+  if (m.gratings && m.gratings.length) {
+    const lo = Math.min(...m.gratings.map(g => g.min_nm));
+    const hi = Math.max(...m.gratings.map(g => g.max_nm));
+    el('wl-input').min = lo;
+    el('wl-input').max = hi;
+    el('mono-range').textContent = `${lo}-${hi} nm across ${m.gratings.length} gratings`;
+  }
 
   const b = el('mono-badge');
   if (!m.hardware) { b.className='badge badge-warn'; b.textContent='LABEL ONLY'; }

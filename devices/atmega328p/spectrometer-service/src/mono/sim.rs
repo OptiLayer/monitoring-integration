@@ -63,10 +63,10 @@ impl Sim {
         Ok(())
     }
 
-    pub fn is_valid_wl(&self, grating: i32, nm: f64) -> Result<bool, String> {
-        let Some(&(_, min, max)) = GRATINGS.get(grating as usize) else {
+    pub fn grating_prm(&self, grating: i32) -> Result<(u32, f64, f64), String> {
+        let Some(&(grooves, min, max)) = GRATINGS.get(grating as usize) else {
             return Err(format!("grating {grating} out of range"));
         };
-        Ok((min..=max).contains(&nm))
+        Ok((grooves, min, max))
     }
 }

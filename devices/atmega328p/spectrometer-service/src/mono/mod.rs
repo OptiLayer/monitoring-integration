@@ -36,8 +36,18 @@ impl Backend {
 
     /// Select a grating if needed, move, and read back where we landed.
     /// Blocking: the SDK's `sls_SetWl` returns only once the grating settled.
-    fn move_to(&self, nm: f64, pinned_grating: Option<i32>) -> Result<f64, String> {
-        let grating = self.choose_grating(nm, pinned_grating)?;
+    fn move_to(
+        &self,
+        nm: f64,
+        gratings: &[Grating],
+        pinned_grating: Option<i32>,
+    ) -> Result<f64, String> {
+        let grating = choose_grating(
+            nm,
+            gratings,
+            delegate!(self, active_grating)?,
+            pinned_grating,
+        )?;
 
         if grating != delegate!(self, active_grating)? {
             tracing::info!("mono: switching to grating {grating} for {nm} nm");
@@ -48,25 +58,22 @@ impl Backend {
         delegate!(self, wavelength)
     }
 
-    fn choose_grating(&self, nm: f64, pinned: Option<i32>) -> Result<i32, String> {
-        if let Some(g) = pinned {
-            if !delegate!(self, is_valid_wl, g, nm)? {
-                return Err(format!("{nm} nm is out of range for pinned grating {g}"));
-            }
-            return Ok(g);
-        }
-
-        let active = delegate!(self, active_grating)?;
+    /// Read the installed gratings once. This is the call that touches the
+    /// most of the SDK's device layer, so we do it at connect time — see the
+    /// note on `Monochromator::connect`.
+    fn read_gratings(&self) -> Result<Vec<Grating>, String> {
         let count = delegate!(self, grating_count)?;
-        let mut valid = Vec::new();
-        for g in 0..count {
-            if delegate!(self, is_valid_wl, g, nm)? {
-                valid.push(g);
-            }
-        }
-
-        pick_grating(active, &valid)
-            .ok_or_else(|| format!("{nm} nm is out of range for every installed grating"))
+        (0..count)
+            .map(|index| {
+                let (grooves, min_nm, max_nm) = delegate!(self, grating_prm, index)?;
+                Ok(Grating {
+                    index,
+                    grooves,
+                    min_nm,
+                    max_nm,
+                })
+            })
+            .collect()
     }
 
     fn wavelength(&self) -> Result<f64, String> {
@@ -84,22 +91,61 @@ impl Backend {
     }
 }
 
+/// One installed diffraction grating and the range it can reach.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grating {
+    pub index: i32,
+    pub grooves: u32,
+    pub min_nm: f64,
+    pub max_nm: f64,
+}
+
+impl Grating {
+    fn reaches(&self, nm: f64) -> bool {
+        (self.min_nm..=self.max_nm).contains(&nm)
+    }
+}
+
 /// Prefer staying on the active grating when it can reach the wavelength.
 ///
 /// Switching gratings changes throughput and stray light, so an unnecessary
 /// switch mid-scan puts a step in the spectrum. Only move when we must, and
 /// then take the highest-dispersion (lowest-index) grating that can reach it.
-fn pick_grating(active: i32, valid: &[i32]) -> Option<i32> {
-    if valid.contains(&active) {
-        return Some(active);
+fn choose_grating(
+    nm: f64,
+    gratings: &[Grating],
+    active: i32,
+    pinned: Option<i32>,
+) -> Result<i32, String> {
+    if let Some(g) = pinned {
+        let Some(grating) = gratings.iter().find(|x| x.index == g) else {
+            return Err(format!("pinned grating {g} is not installed"));
+        };
+        if !grating.reaches(nm) {
+            return Err(format!(
+                "{nm} nm is outside pinned grating {g} ({}-{} nm)",
+                grating.min_nm, grating.max_nm
+            ));
+        }
+        return Ok(g);
     }
-    valid.first().copied()
+
+    if gratings.iter().any(|g| g.index == active && g.reaches(nm)) {
+        return Ok(active);
+    }
+
+    gratings
+        .iter()
+        .find(|g| g.reaches(nm))
+        .map(|g| g.index)
+        .ok_or_else(|| format!("{nm} nm is out of range for every installed grating"))
 }
 
 /// Handle to the instrument. Calls are serialised — the grating is one motor.
 pub struct Monochromator {
     backend: Arc<Backend>,
     lock: Mutex<()>,
+    gratings: Vec<Grating>,
     pinned_grating: Option<i32>,
 }
 
@@ -130,11 +176,38 @@ impl Monochromator {
 
         tracing::info!("mono: connected to {}", backend.description());
 
+        // Read the grating table up front rather than per move. It never
+        // changes, it saves a handful of FFI calls on every wavelength set,
+        // and it front-loads the risk: with no instrument reachable the SDK
+        // throws inside sls_GetGratingCount, and because that is an unhandled
+        // exception in its own managed code it takes the process down rather
+        // than returning an error we could report. Far better that happens now,
+        // at startup, than three hours into a deposition run.
+        let gratings = backend.read_gratings()?;
+        if gratings.is_empty() {
+            return Err("instrument reports no gratings".to_string());
+        }
+        for g in &gratings {
+            tracing::info!(
+                "mono: grating {} — {} gr/mm, {}-{} nm",
+                g.index,
+                g.grooves,
+                g.min_nm,
+                g.max_nm
+            );
+        }
+
         Ok(Self {
             backend: Arc::new(backend),
             lock: Mutex::new(()),
+            gratings,
             pinned_grating,
         })
+    }
+
+    /// The installed gratings and their ranges, read at connect time.
+    pub fn gratings(&self) -> &[Grating] {
+        &self.gratings
     }
 
     pub fn description(&self) -> &str {
@@ -145,9 +218,10 @@ impl Monochromator {
     pub async fn set_wavelength(&self, nm: f64) -> Result<f64, String> {
         let _guard = self.lock.lock().await;
         let backend = self.backend.clone();
+        let gratings = self.gratings.clone();
         let pinned = self.pinned_grating;
 
-        tokio::task::spawn_blocking(move || backend.move_to(nm, pinned))
+        tokio::task::spawn_blocking(move || backend.move_to(nm, &gratings, pinned))
             .await
             .map_err(|e| format!("mono task panicked: {e}"))?
     }
@@ -164,21 +238,70 @@ impl Monochromator {
 mod tests {
     use super::*;
 
+    /// The M266-IV table, as `sim` reports it.
+    fn m266() -> Vec<Grating> {
+        vec![
+            Grating {
+                index: 0,
+                grooves: 1800,
+                min_nm: 0.0,
+                max_nm: 540.0,
+            },
+            Grating {
+                index: 1,
+                grooves: 1200,
+                min_nm: 0.0,
+                max_nm: 800.0,
+            },
+            Grating {
+                index: 2,
+                grooves: 600,
+                min_nm: 0.0,
+                max_nm: 1800.0,
+            },
+            Grating {
+                index: 3,
+                grooves: 200,
+                min_nm: 0.0,
+                max_nm: 5400.0,
+            },
+        ]
+    }
+
     #[test]
     fn keeps_active_grating_when_it_can_reach() {
-        // 500 nm is reachable by gratings 0, 1, 2 and 3 — stay put on 2.
-        assert_eq!(pick_grating(2, &[0, 1, 2, 3]), Some(2));
+        // 500 nm is reachable by every grating — stay on the active one
+        // rather than stepping the spectrum for no reason.
+        assert_eq!(choose_grating(500.0, &m266(), 2, None).unwrap(), 2);
     }
 
     #[test]
     fn switches_only_when_active_cannot_reach() {
-        // 900 nm: gratings 0 (<=540) and 1 (<=800) are out.
-        assert_eq!(pick_grating(1, &[2, 3]), Some(2));
+        // 900 nm: gratings 0 (<=540) and 1 (<=800) cannot; 2 is the next up.
+        assert_eq!(choose_grating(900.0, &m266(), 1, None).unwrap(), 2);
     }
 
     #[test]
-    fn no_grating_reaches() {
-        assert_eq!(pick_grating(0, &[]), None);
+    fn rejects_wavelength_no_grating_reaches() {
+        assert!(choose_grating(9000.0, &m266(), 0, None).is_err());
+    }
+
+    #[test]
+    fn pinned_grating_is_never_switched_away_from() {
+        assert_eq!(choose_grating(500.0, &m266(), 2, Some(0)).unwrap(), 0);
+        let err = choose_grating(900.0, &m266(), 2, Some(0)).unwrap_err();
+        assert!(err.contains("pinned grating 0"), "{err}");
+    }
+
+    #[test]
+    fn pinned_grating_must_be_installed() {
+        assert!(choose_grating(500.0, &m266(), 0, Some(9)).is_err());
+    }
+
+    #[tokio::test]
+    async fn sim_reads_grating_table_at_connect() {
+        let mono = Monochromator::connect("sim", 0, None).unwrap();
+        assert_eq!(mono.gratings(), m266());
     }
 
     #[tokio::test]
@@ -196,11 +319,11 @@ mod tests {
         // Park on grating 1, which reaches 800 nm at most.
         mono.backend.set_active_grating(1).unwrap();
 
-        // 700 nm is within grating 1 — stay put rather than change throughput.
+        // 700 nm is within grating 1 — stay put.
         mono.set_wavelength(700.0).await.unwrap();
         assert_eq!(mono.backend.active_grating().unwrap(), 1);
 
-        // 900 nm is not — the next grating up (2, 600 gr/mm) has to take over.
+        // 900 nm is not — grating 2 has to take over.
         mono.set_wavelength(900.0).await.unwrap();
         assert_eq!(mono.backend.active_grating().unwrap(), 2);
     }

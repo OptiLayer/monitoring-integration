@@ -117,12 +117,24 @@ can reach the requested wavelength**, and only switches when it cannot —
 switching changes throughput and stray light, which puts a step in the
 spectrum mid-scan. Use `--mono-grating` to forbid switching entirely.
 
+The table is read from the instrument at startup and logged, so it follows the
+instrument config rather than being hardcoded. For our M266-IV:
+
 | Grating | Grooves/mm | Max λ |
 |---------|-----------|-------|
 | 0 | 1800 | 540 nm |
 | 1 | 1200 | 800 nm |
 | 2 | 600 | 1800 nm |
 | 3 | 200 | 5400 nm |
+
+> **If the instrument is not reachable, `--mono` takes the process down at
+> startup.** Grating enumeration throws an unhandled `NullReferenceException`
+> inside the SDK's own managed code (`sls_GetGratingCount`), which the CLR
+> treats as fatal — there is no error for us to catch and report. We therefore
+> read the grating table during connect rather than on the first move, so this
+> surfaces immediately at startup instead of hours into a deposition run.
+> Observed under wine with no instrument attached; not yet confirmed against
+> real hardware on Windows.
 
 ### Settling
 

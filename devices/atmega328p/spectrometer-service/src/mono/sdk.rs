@@ -153,20 +153,38 @@ impl Sdk {
         Ok(())
     }
 
-    pub fn is_valid_wl(&self, grating: i32, nm: f64) -> Result<bool, String> {
+    /// Grooves/mm and the wavelength range the grating can reach.
+    pub fn grating_prm(&self, grating: i32) -> Result<(u32, f64, f64), String> {
         let f = sym!(
             self,
-            "sls_IsValidWlGrating",
-            unsafe extern "C" fn(c_int, c_int, c_double, *mut c_int) -> c_int
+            "sls_GetGratingPrm",
+            unsafe extern "C" fn(
+                c_int,
+                c_int,
+                *mut c_int,
+                *mut c_double,
+                *mut c_double,
+                *mut c_double,
+            ) -> c_int
         );
-        let mut valid: c_int = 0;
-        if unsafe { f(self.idx, grating, nm, &mut valid) } == 0 {
+        let (mut grooves, mut min, mut max, mut blaze) = (0 as c_int, 0.0, 0.0, 0.0);
+        if unsafe {
+            f(
+                self.idx,
+                grating,
+                &mut grooves,
+                &mut min,
+                &mut max,
+                &mut blaze,
+            )
+        } == 0
+        {
             return Err(format!(
-                "sls_IsValidWlGrating failed: {}",
+                "sls_GetGratingPrm({grating}) failed: {}",
                 self.last_error()
             ));
         }
-        Ok(valid != 0)
+        Ok((grooves.max(0) as u32, min, max))
     }
 
     /// `int fn(int* out)` — the shape shared by the various *Count getters.

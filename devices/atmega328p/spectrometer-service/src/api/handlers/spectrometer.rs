@@ -101,6 +101,9 @@ pub async fn mono_json(state: &AppState) -> serde_json::Value {
         "moving": device.mono_moving,
         "hardware": state.mono.is_some(),
         "instrument": state.mono.as_ref().map(|m| m.description()),
+        "gratings": state.mono.as_ref().map(|m| m.gratings().iter().map(|g| serde_json::json!({
+            "index": g.index, "grooves": g.grooves, "min_nm": g.min_nm, "max_nm": g.max_nm,
+        })).collect::<Vec<_>>()),
         "error": device.mono_error,
     })
 }
