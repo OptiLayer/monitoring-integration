@@ -18,3 +18,10 @@ env/
 
 # OS
 .DS_Store
+
+# Rust
+target/
+
+# PyInstaller
+build/
+dist/
