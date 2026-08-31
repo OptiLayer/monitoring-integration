@@ -62,6 +62,7 @@ mod tests {
             config: create_shared_config(dir.path().join("cfg.toml")),
             broadcast_tx: tx,
             device_cmd_tx: cmd_tx,
+            mono: None,
         };
         (state, dir)
     }

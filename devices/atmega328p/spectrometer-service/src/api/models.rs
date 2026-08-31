@@ -42,7 +42,15 @@ pub struct ControlWavelengthRequest {
 
 #[derive(Debug, Serialize)]
 pub struct ControlWavelengthResponse {
+    /// Requested wavelength (nm)
     pub control_wavelength: f64,
+    /// What the monochromator reports it is at, when one is connected
+    pub actual_wavelength: Option<f64>,
+    /// False when no monochromator is configured — the value is a label only
+    pub hardware: bool,
+    /// Why the move failed, if it did
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ============= Vacuum Chamber Endpoints =============

@@ -3,6 +3,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 
+use crate::api::handlers::spectrometer;
 use crate::service::state::AppState;
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
@@ -31,6 +32,16 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     if socket
         .send(Message::Text(init_msg.to_string().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    // Current monochromator state, so a fresh tab is not blank until the next move
+    let mono_msg = spectrometer::mono_json(&state).await;
+    if socket
+        .send(Message::Text(mono_msg.to_string().into()))
         .await
         .is_err()
     {

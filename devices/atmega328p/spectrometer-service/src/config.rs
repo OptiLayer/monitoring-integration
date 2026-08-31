@@ -30,6 +30,19 @@ pub struct Cli {
     #[arg(long, default_value = "0.05")]
     pub grubbs_alpha: f64,
 
+    /// Enable monochromator control: `sim`, or the folder holding the Solar LS
+    /// `InstrumentCfg*.xml` (empty string = next to the executable, Windows only)
+    #[arg(long)]
+    pub mono: Option<String>,
+
+    /// Monochromator instrument index within the SDK config
+    #[arg(long, default_value = "0")]
+    pub mono_index: i32,
+
+    /// Pin the monochromator to one grating instead of auto-selecting per wavelength
+    #[arg(long)]
+    pub mono_grating: Option<i32>,
+
     /// Path to calibration config file
     #[arg(long, default_value = "calibration.toml")]
     pub calibration_config: std::path::PathBuf,

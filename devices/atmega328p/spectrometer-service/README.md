@@ -86,6 +86,85 @@ END_CYCLE
 
 Raw logs use `--cycle-interval` (default 100ms) for pacing since there are no timestamps.
 
+## Monochromator Control
+
+The ATmega328P board is readout only. Wavelength selection is done by a **Solar
+LS M266-IV** monochromator driven through the vendor SDK, enabled with `--mono`:
+
+```bash
+# Windows (production): folder holding InstrumentCfg*.xml, or "" for the exe's folder
+spectrometer-service.exe --mono "C:\\ProgramData\\SolarLS" serial --device COM3
+
+# Linux (development): simulated M266 with the same four gratings
+cargo run -- --mono sim playback --file ../putty.log --loop-playback
+```
+
+| Flag | Description |
+|------|-------------|
+| `--mono <sim\|path>` | Enable wavelength control. `sim` = simulator, otherwise the SDK config folder |
+| `--mono-index <N>` | Instrument index within the SDK config (default 0) |
+| `--mono-grating <N>` | Pin one grating instead of auto-selecting per wavelength |
+
+Without `--mono`, `POST /control_wavelength` keeps its previous behaviour: it
+stores the value as a label for the monitoring API and reports
+`"hardware": false`. Playback and bench calibration runs want exactly that.
+
+### Grating selection
+
+The M266 has four gratings and the instrument config sets `AutoSelGrating=no`,
+so the service picks one. It **keeps the active grating whenever that grating
+can reach the requested wavelength**, and only switches when it cannot —
+switching changes throughput and stray light, which puts a step in the
+spectrum mid-scan. Use `--mono-grating` to forbid switching entirely.
+
+| Grating | Grooves/mm | Max λ |
+|---------|-----------|-------|
+| 0 | 1800 | 540 nm |
+| 1 | 1200 | 800 nm |
+| 2 | 600 | 1800 nm |
+| 3 | 200 | 5400 nm |
+
+### Settling
+
+`POST /control_wavelength` blocks until the grating has settled (the SDK's
+synchronous `sls_SetWl`). While it is travelling the detector sees a smear of
+every wavelength it sweeps past, so readings taken during the move are **not**
+pushed to the monitoring API, and the dashboard greys out that span.
+
+### Windows deployment
+
+Download `atmega328p-spectrometer-<tag>.zip` from the GitHub release and unpack
+it anywhere. It contains the exe and the whole Solar LS runtime side by side —
+nothing else to install except **.NET Framework 4.0**.
+
+The SDK is loaded at runtime, not linked. Two consequences:
+
+- **CI needs nothing from the SDK to build.** No header, no `.lib`. The release
+  workflow compiles the exe and then copies `vendor/solarls/` next to it.
+- **A missing or broken SDK does not stop the service.** It still starts and the
+  calibration UI still works; only `--mono` fails, with the reason in the log.
+
+The runtime files live in [`vendor/solarls/`](vendor/solarls/) — 13 DLLs (~4 MB)
+plus the instrument config. That folder's README documents where each file came
+from, why the detector assemblies are excluded, and the `SolarLS.SdkExport.dll`
+name collision between the SDK's `Release\` and `Release\x64\` folders. The
+release workflow checks the package is complete and that the shipped
+`SolarLS.SdkExport.dll` really is the x64 build before publishing.
+
+To run against hardware from a local `cargo build`, copy that folder next to the
+binary:
+
+```powershell
+Copy-Item vendor/solarls/* target/release/ -Exclude README.md
+target/release/spectrometer-service.exe --mono "" serial --device COM3
+```
+
+`--mono ""` means "load the instrument config from the executable's folder".
+
+Cross-compiling from Linux is not needed for development — `--mono sim` covers
+the endpoint, the grating logic and the dashboard. The Windows binary is built
+on `windows-latest` in CI.
+
 ## Calibration Formula
 
 ```
@@ -102,7 +181,8 @@ The AD7793 reads higher ADC values for less light (dark ~14M, full ~300). The fo
 
 Available at `http://localhost:<port>` (default 8100).
 
-- **Transmittance chart** — live T% over time (last 300 cycles)
+- **Monochromator panel** — wavelength setpoint + Go, actual readback, READY/MOVING/ERROR badge
+- **Transmittance chart** — live T% over time (last 300 cycles), greyed while the grating moves
 - **Raw means chart** — dark (red), full (green), sample (blue) with clipping markers
 - **Settings controls** — GAIN, FADC, COUNT dropdowns with Save button
 - **Live values** — current T%, dark/full/sample means
@@ -125,7 +205,7 @@ Available at `http://localhost:<port>` (default 8100).
 |--------|------|-------------|
 | GET | `/device/info` | Device capabilities |
 | POST | `/register` | Register with monitoring API |
-| GET/POST | `/control_wavelength` | Wavelength control |
+| GET/POST | `/control_wavelength` | Wavelength control — moves the monochromator when `--mono` is set |
 | GET/POST | `/vacuum_chamber/material` | Material setting |
 | POST | `/vacuum_chamber/start` | Start deposition |
 | POST | `/vacuum_chamber/stop` | Stop deposition |
@@ -151,7 +231,7 @@ Priority: CLI args > calibration.toml > hardcoded defaults.
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
-cargo test               # 98 tests
+cargo test               # 109 tests
 cargo clippy --tests     # Zero warnings
 ```
 

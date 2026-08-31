@@ -42,11 +42,31 @@ canvas { width: 100%; height: 100%; display: block; }
 .log-panel .err { color: #ef4444; }
 .log-panel .data { color: #a0a0b0; }
 .log-panel .cycle { color: #22c55e; }
+.wl-row { display: flex; gap: 6px; align-items: center; }
+.wl-row input { flex: 1; margin: 0; }
+.wl-row button { width: auto; padding: 6px 14px; margin: 0; }
+.btn-go { background: #0f766e; color: white; }
+.btn-go:hover { background: #14b8a6; }
+.btn-go:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+.mono-err { font-size: 11px; color: #f4a0a0; margin-top: 6px; word-break: break-word; }
 </style>
 </head>
 <body>
 <div class="sidebar">
   <h1>ATmega328P</h1>
+
+  <div class="section">
+    <h2>Monochromator</h2>
+    <div class="wl-row">
+      <input type="number" id="wl-input" min="1" step="0.1" placeholder="nm">
+      <button class="btn-go" id="wl-go" onclick="setWavelength()">Go</button>
+    </div>
+    <div class="stat"><span class="stat-label">Setpoint</span><span class="stat-value" id="wl-set">-</span></div>
+    <div class="stat"><span class="stat-label">Actual</span><span class="stat-value" id="wl-actual">-</span></div>
+    <div class="stat"><span class="stat-label">Status</span><span class="stat-value"><span class="badge" id="mono-badge">-</span></span></div>
+    <div class="settings-note" id="mono-instrument"></div>
+    <div class="mono-err" id="mono-error" style="display:none"></div>
+  </div>
 
   <div class="section">
     <h2>Device Settings</h2>
@@ -125,7 +145,7 @@ canvas { width: 100%; height: 100%; display: block; }
   </div>
 
   <div class="chart-container" style="flex:2">
-    <div class="chart-title">Calibrated Transmittance (%)</div>
+    <div class="chart-title">Calibrated Transmittance (%) &mdash; <span style="color:#94a3b8">grey = grating moving</span></div>
     <canvas id="chart-t"></canvas>
   </div>
 
@@ -142,7 +162,7 @@ canvas { width: 100%; height: 100%; display: block; }
 
 <script>
 const MAX = 300;
-const D = { t: [], dark: [], full: [], sample: [], clip: [] };
+const D = { t: [], dark: [], full: [], sample: [], clip: [], moving: [] };
 let ws, cycles = 0;
 
 function connect() {
@@ -156,6 +176,7 @@ function connect() {
     else if (m.type==='cycle') onCycle(m);
     else if (m.type==='settings_updated') onSettingsUpdated(m);
     else if (m.type==='log') onLog(m);
+    else if (m.type==='mono') onMono(m);
   };
 }
 
@@ -186,6 +207,7 @@ function onCycle(m) {
   D.full.push(m.full_mean);
   D.sample.push(m.sample_mean);
   D.clip.push(m.is_clipped);
+  D.moving.push(monoMoving);
   for (const k of Object.keys(D)) { if (D[k].length>MAX) D[k].shift(); }
 
   const cb = el('clip-badge');
@@ -203,6 +225,46 @@ function onSettingsUpdated(m) {
     el('map-dark').value = m.series_mapping.dark;
     el('map-full').value = m.series_mapping.full;
     el('map-sample').value = m.series_mapping.sample;
+  }
+}
+
+let monoMoving = false;
+
+function onMono(m) {
+  monoMoving = m.moving;
+  el('wl-set').textContent = m.control_wavelength.toFixed(1) + ' nm';
+  el('wl-actual').textContent = m.actual_wavelength==null ? '-' : m.actual_wavelength.toFixed(1)+' nm';
+  if (document.activeElement !== el('wl-input') && !el('wl-input').value) {
+    el('wl-input').value = m.control_wavelength.toFixed(1);
+  }
+  el('mono-instrument').textContent = m.instrument || '';
+
+  const b = el('mono-badge');
+  if (!m.hardware) { b.className='badge badge-warn'; b.textContent='LABEL ONLY'; }
+  else if (m.error) { b.className='badge badge-err'; b.textContent='ERROR'; }
+  else if (m.moving) { b.className='badge badge-warn'; b.textContent='MOVING'; }
+  else { b.className='badge badge-ok'; b.textContent='READY'; }
+
+  const e = el('mono-error');
+  e.style.display = m.error ? '' : 'none';
+  e.textContent = m.error || '';
+
+  el('wl-go').disabled = m.moving;
+  el('wl-go').textContent = m.moving ? '...' : 'Go';
+}
+
+async function setWavelength() {
+  const nm = parseFloat(el('wl-input').value);
+  if (!isFinite(nm)) return;
+  el('wl-go').disabled = true;
+  try {
+    const r = await fetch('/control_wavelength', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ wavelength: nm }),
+    });
+    onMono({ ...(await r.json()), type:'mono', moving:false });
+  } finally {
+    el('wl-go').disabled = monoMoving;
   }
 }
 
@@ -265,6 +327,17 @@ function draw() {
   drawRaw('chart-raw');
 }
 
+// Vertical band wherever `flags[i]` is set — marks samples that are not
+// trustworthy (clipped ADC, or grating in motion).
+function shade(ctx, p, pw, ph, flags, color) {
+  ctx.fillStyle = color;
+  for (let i=0;i<flags.length;i++) {
+    if (!flags[i]) continue;
+    const x=p.l+(i/(MAX-1))*pw;
+    ctx.fillRect(x-1,p.t,3,ph);
+  }
+}
+
 function drawLine(id, vals, color, fixedRange) {
   const c = el(id), ctx = c.getContext('2d'), dpr = devicePixelRatio||1;
   c.width = c.clientWidth*dpr; c.height = c.clientHeight*dpr;
@@ -276,6 +349,7 @@ function drawLine(id, vals, color, fixedRange) {
   if (!fixedRange && vals.length>0) { yMin=Math.min(...vals)*0.95; yMax=Math.max(...vals)*1.05; }
 
   grid(ctx,p,pw,ph,yMin,yMax,'');
+  shade(ctx,p,pw,ph,D.moving,'rgba(148,163,184,0.25)');
   if (vals.length<2) return;
   ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.beginPath();
   for (let i=0;i<vals.length;i++) {
@@ -307,12 +381,8 @@ function drawRaw(id) {
     ctx.stroke();
   }
 
-  // Clipping markers
-  for (let i=0;i<D.clip.length;i++) {
-    if (!D.clip[i]) continue;
-    const x=p.l+(i/(MAX-1))*pw;
-    ctx.fillStyle='rgba(233,69,96,0.3)'; ctx.fillRect(x-1,p.t,3,ph);
-  }
+  shade(ctx,p,pw,ph,D.moving,'rgba(148,163,184,0.25)');
+  shade(ctx,p,pw,ph,D.clip,'rgba(233,69,96,0.3)');
 }
 
 function grid(ctx,p,pw,ph,yMin,yMax,sfx) {

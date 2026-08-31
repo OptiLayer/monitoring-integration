@@ -20,6 +20,11 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
+# Windows-only: the Solar LS monochromator SDK is a .NET 4.0 DLL. Loaded at
+# runtime so Linux dev builds (which use `--mono sim`) never see it.
+[target.'cfg(windows)'.dependencies]
+libloading = "0.8"
+
 [dev-dependencies]
 approx = "0.5.1"
 axum-test = "18.4.1"

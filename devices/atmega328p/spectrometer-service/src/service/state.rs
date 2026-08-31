@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast, mpsc};
 
+use crate::mono::Monochromator;
 use crate::protocol::ProcessedMeasurement;
 use crate::service::calibration::SharedConfig;
 
@@ -11,7 +12,14 @@ pub struct DeviceState {
     pub monitoring_api_url: Option<String>,
     pub spectrometer_id: Option<String>,
     pub vacuum_chamber_id: Option<String>,
+    /// Requested control wavelength (nm)
     pub control_wavelength: f64,
+    /// Wavelength the monochromator reports it is actually at (nm)
+    pub actual_wavelength: Option<f64>,
+    /// True while the grating is travelling — readings are meaningless
+    pub mono_moving: bool,
+    /// Last monochromator failure, cleared on the next successful move
+    pub mono_error: Option<String>,
     pub is_running: bool,
     pub current_material: String,
     pub is_depositing: bool,
@@ -25,6 +33,9 @@ impl Default for DeviceState {
             spectrometer_id: None,
             vacuum_chamber_id: None,
             control_wavelength: 550.0,
+            actual_wavelength: None,
+            mono_moving: false,
+            mono_error: None,
             is_running: false,
             current_material: "H".to_string(),
             is_depositing: false,
@@ -41,8 +52,10 @@ impl DeviceState {
 
     /// Stream to the monitoring API whenever registered — shutter state is
     /// irrelevant, the operator needs the live signal before pressing Start.
+    /// Suppressed while the grating is moving: the detector sees a smear of
+    /// every wavelength it sweeps past, which is not a measurement.
     pub fn should_process_data(&self) -> bool {
-        self.is_registered()
+        self.is_registered() && !self.mono_moving
     }
 }
 
@@ -60,6 +73,8 @@ pub struct AppState {
     pub broadcast_tx: broadcast::Sender<serde_json::Value>,
     /// Channel for sending commands to the device (GAIN=, FADC=, COUNT=)
     pub device_cmd_tx: mpsc::Sender<String>,
+    /// Monochromator, when one was configured with `--mono`
+    pub mono: Option<Arc<Monochromator>>,
 }
 
 impl AppState {
@@ -103,5 +118,16 @@ mod tests {
         assert!(state.should_process_data());
         state.is_running = true;
         assert!(state.should_process_data());
+    }
+
+    #[test]
+    fn test_should_not_process_data_while_grating_moves() {
+        let state = DeviceState {
+            monitoring_api_url: Some("http://localhost:8200".to_string()),
+            spectrometer_id: Some("test-id".to_string()),
+            mono_moving: true,
+            ..Default::default()
+        };
+        assert!(!state.should_process_data());
     }
 }

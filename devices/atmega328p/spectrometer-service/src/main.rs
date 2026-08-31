@@ -10,12 +10,14 @@ mod config;
 mod data_source;
 mod error;
 mod monitoring;
+mod mono;
 mod processing;
 mod protocol;
 mod service;
 
 use config::Cli;
 use data_source::serial::SerialDataSource;
+use mono::Monochromator;
 use service::calibration::create_shared_config;
 use service::data_loop::DataProcessingLoop;
 use service::state::{AppState, create_shared_state};
@@ -68,12 +70,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create device command channel (UI -> data source)
     let (device_cmd_tx, mut device_cmd_rx) = mpsc::channel::<String>(16);
 
+    // Connect the monochromator, if one was configured
+    let mono = match cli.mono.as_deref() {
+        None => None,
+        Some(target) => Some(std::sync::Arc::new(Monochromator::connect(
+            target,
+            cli.mono_index,
+            cli.mono_grating,
+        )?)),
+    };
+
+    // Seed the dashboard with where the instrument actually is right now
+    if let Some(m) = &mono {
+        match m.wavelength().await {
+            Ok(nm) => {
+                let mut s = device_state.write().await;
+                s.control_wavelength = nm;
+                s.actual_wavelength = Some(nm);
+            }
+            Err(e) => tracing::warn!("mono: could not read current wavelength: {e}"),
+        }
+    }
+
     // Composite app state
     let app_state = AppState {
         device: device_state.clone(),
         config: device_config.clone(),
         broadcast_tx: broadcast_tx.clone(),
         device_cmd_tx,
+        mono,
     };
 
     // Create data source

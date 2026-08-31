@@ -32,11 +32,56 @@ jobs:
       - name: Run tests
         run: cargo test --release
 
-      - name: Rename binary
-        run: cp target/release/spectrometer-service.exe target/release/atmega328p-spectrometer-${{ github.ref_name }}.exe
+      # The Solar LS SDK is loaded at runtime, so the build above needs none of
+      # it. The exe is useless against real hardware without those DLLs beside
+      # it, though, so ship them in one archive rather than a bare exe.
+      - name: Stage release package
+        shell: pwsh
+        env:
+          PKG: atmega328p-spectrometer-${{ github.ref_name }}
+        run: |
+          New-Item -ItemType Directory -Path $env:PKG | Out-Null
+          Copy-Item target/release/spectrometer-service.exe $env:PKG/
+          Copy-Item vendor/solarls/* $env:PKG/ -Exclude README.md
+          Get-ChildItem $env:PKG
+
+      # Fail the release rather than shipping an exe that dies with
+      # "missing symbol sls_Init" the first time someone sets a wavelength.
+      - name: Verify monochromator runtime is complete
+        shell: pwsh
+        env:
+          PKG: atmega328p-spectrometer-${{ github.ref_name }}
+        run: |
+          $required = @(
+            'spectrometer-service.exe', 'SolarLS.SdkExport.dll', 'SolarLS.Sdk.dll',
+            'SolarLS.Common.dll', 'SolarLS.Controls.dll', 'SolarLS.InstrumentConfig.dll',
+            'SolarLS.InstrumentControls.dll', 'CyUSB.dll', 'MathNet.Numerics.dll',
+            'CsvHelper.dll', 'NLog.dll', 'Common.Logging.dll', 'Common.Logging.Core.dll',
+            'Common.Logging.NLog41.dll', 'InstrumentCfg_M266#SM2-150.xml'
+          )
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path $env:PKG $_)) }
+          if ($missing) { throw "Missing from release package: $($missing -join ', ')" }
+
+          # Two different files in the SDK share the name SolarLS.SdkExport.dll:
+          # the Release\ one is a 32-bit AnyCPU managed wrapper, the Release\x64\
+          # one is the mixed-mode DLL our x64 exe can actually load. Both contain
+          # the sls_* strings, so check the COFF machine type, not the strings.
+          $dll = Join-Path $env:PKG 'SolarLS.SdkExport.dll'
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw ("{0} is machine 0x{1:x4}, expected 0x8664 (x64). Take it from the SDK's Release\x64\ folder, not Release\." -f $dll, $machine)
+          }
+
+      - name: Create zip
+        shell: pwsh
+        env:
+          PKG: atmega328p-spectrometer-${{ github.ref_name }}
+        run: Compress-Archive -Path $env:PKG -DestinationPath "$env:PKG.zip"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: devices/atmega328p/spectrometer-service/target/release/atmega328p-spectrometer-${{ github.ref_name }}.exe
+          files: devices/atmega328p/spectrometer-service/atmega328p-spectrometer-${{ github.ref_name }}.zip
