@@ -37,6 +37,18 @@ class MonitoringClient:
         self.vacuum_chamber_id = vacuum_chamber_id
         logger.info(f"Registered with monitoring API: {monitoring_api_url}")
 
+    async def report_shutter(self, open: bool) -> None:
+        """Tell OptiMonitor the shutter physically closed or opened."""
+        if self.monitoring_api_url is None or self.vacuum_chamber_id is None or not self._client:
+            return
+        url = f"{self.monitoring_api_url}/vacuum-chambers/{self.vacuum_chamber_id}/shutter"
+        try:
+            response = await self._client.post(url, json={"open": open, "spectrometer_id": self.spectrometer_id})
+            if response.status_code != 200:
+                logger.warning(f"Failed to report shutter: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Error reporting shutter: {e}")
+
     async def post_spectral_data(self, calibrated_readings: list[float], wavelengths: list[float]) -> None:
         """Post calibrated spectral data to OptiMonitor."""
         if not self.registered or not self._client:

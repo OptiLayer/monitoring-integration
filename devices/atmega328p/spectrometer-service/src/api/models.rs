@@ -55,9 +55,24 @@ pub struct ControlWavelengthResponse {
 
 // ============= Vacuum Chamber Endpoints =============
 
+#[derive(Debug, Deserialize)]
+pub struct SetMaterialRequest {
+    pub material: String,
+    #[serde(default)]
+    pub fraction: Option<f64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct MaterialResponse {
     pub material: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fraction: Option<f64>,
+}
+
+/// The chamber's report that its shutter physically closed or opened
+#[derive(Debug, Deserialize)]
+pub struct ShutterReport {
+    pub open: bool,
 }
 
 #[derive(Debug, Serialize)]

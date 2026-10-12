@@ -216,33 +216,46 @@ async def data_sending_loop():
 
 ### 7. Set Material - `POST /vacuum_chamber/material`
 
-**Purpose**: Set the material for the next deposition.
+**Purpose**: Before a run, select the material of the first layer. During a run, this is OptiMonitor's decision that the current layer is finished: a **layer switch**.
 
-**Request Body**: Plain JSON string
+**Request Body**:
 ```json
-"H"
+{
+  "material": "L",
+  "fraction": 100.0
+}
 ```
 
 **Response**:
 ```json
 {
-  "material": "H"
+  "material": "L",
+  "fraction": 100.0
 }
 ```
 
+**What to do during a run**:
+- Return 200 at once; do not wait for the shutter.
+- Close the shutter, and report it closed (see *Shutter Reports* below). OptiMonitor keeps fitting the layer until that report arrives, so a slow shutter costs nothing.
+- Switch the source to the new material, open the shutter, and report it open. OptiMonitor starts the next layer on that report.
+
 **Example Implementation**:
 ```python
-from fastapi import Body
+from pydantic import BaseModel
+
+class SetMaterialRequest(BaseModel):
+    material: str
+    fraction: float = 100.0
 
 current_material = "H"
 
 @app.post("/vacuum_chamber/material")
-async def set_material(material: str = Body(...)):
+async def set_material(request: SetMaterialRequest):
     global current_material
-    current_material = material
-    # Configure your hardware for this material
-    logger.info(f"Material set to {material}")
-    return {"material": current_material}
+    current_material = request.material
+    if is_depositing:
+        asyncio.create_task(switch_layer(request.material))  # close → report → switch → open → report
+    return {"material": current_material, "fraction": request.fraction}
 
 @app.get("/vacuum_chamber/material")
 async def get_material():
@@ -265,9 +278,8 @@ async def get_material():
 ```
 
 **What to do**:
-- Open your deposition shutter / start your source
-- Begin sending spectral data to the monitoring API
-- Return success response
+- Arm the run and return success. OptiMonitor fits nothing yet.
+- When the shutter physically opens, report it (see *Shutter Reports*). Fitting of the first layer begins on that report.
 
 **Example Implementation**:
 ```python
@@ -278,12 +290,8 @@ async def start_deposition():
     global is_depositing
     is_depositing = True
 
-    # Open shutter / start source
-    hardware_start_deposition()
-
-    # Start data sending loop if not already running
-    if not data_task:
-        asyncio.create_task(data_sending_loop())
+    # Start source; once the shutter is open:
+    asyncio.create_task(open_shutter_and_report())
 
     logger.info("Deposition started")
     return {"status": "running"}
@@ -305,9 +313,9 @@ async def start_deposition():
 ```
 
 **What to do**:
-- Close your deposition shutter / stop your source
-- Stop sending spectral data
-- Return success response
+- This is the last layer: close the shutter and do not reopen it. Return success at once.
+- Report the shutter closed when it physically is. OptiMonitor finalizes the last layer and ends the run on that report.
+- Keep sending spectral data; OptiMonitor shows it unfitted.
 
 **Example Implementation**:
 ```python
@@ -316,8 +324,7 @@ async def stop_deposition():
     global is_depositing
     is_depositing = False
 
-    # Close shutter / stop source
-    hardware_stop_deposition()
+    asyncio.create_task(close_shutter_and_report())
 
     logger.info("Deposition stopped")
     return {"status": "stopped"}
@@ -376,12 +383,13 @@ User activates your spectrometer:
 POST http://localhost:8200/spectrometers/{id}/activate
 ```
 
-### 4. Material Configuration (Optional)
-User may set material before starting:
+### 4. Material Configuration
+Monitoring sets the first layer's material before starting:
 ```bash
 PUT http://localhost:8200/vacuum-chambers/{id}/material
 {
-  "material": "H"
+  "material": "H",
+  "fraction": 100.0
 }
 ```
 
@@ -395,8 +403,11 @@ POST http://localhost:8200/vacuum-chambers/{id}/start
 
 This triggers:
 1. Monitoring calls `POST /vacuum_chamber/start` on your device
-2. Your device starts the deposition process
+2. Your device starts the deposition process and reports the shutter open once it is
 3. Monitoring begins fitting the spectral data your device is already sending
+
+### 5a. Layer Switch
+When a layer is complete (automatically, or from the material button), monitoring calls `PUT /vacuum-chambers/{id}/material` with the next material, forwarded to your device as `POST /vacuum_chamber/material`. Your device closes the shutter and reports it, switches the source, opens the shutter and reports it. Monitoring keeps fitting the old layer until the closed report and starts the new one on the open report.
 
 ### 6. During Deposition
 Your device repeatedly sends data:
@@ -415,8 +426,33 @@ POST http://localhost:8200/vacuum-chambers/{id}/stop
 
 This triggers:
 1. Monitoring calls `POST /vacuum_chamber/stop` on your device
-2. Your device stops the deposition process
-3. Your device stops sending spectral data
+2. Your device closes the shutter for good and reports it closed
+3. Monitoring finalizes the last layer and ends the run; your device keeps streaming
+
+---
+
+## Shutter Reports (your device → OptiMonitor)
+
+Every vacuum chamber has a shutter, and OptiMonitor gates its fitting on it: scans are fitted only while the shutter is open, a layer switch completes on the closed report, the next layer starts on the open report. **Report every physical shutter transition**:
+
+```python
+POST {monitoring_api_url}/vacuum-chambers/{vacuum_chamber_id}/shutter
+{
+  "open": false,
+  "spectrometer_id": "uuid-from-register"   # optional, helps when chamber and spectrometer are separate devices
+}
+```
+
+OptiMonitor answers 200. The sequence of a run is:
+
+| Event | You report | OptiMonitor does |
+|-------|-----------|------------------|
+| Start, shutter opens | `{"open": true}` | begins fitting layer 1 |
+| Layer switch, shutter closes | `{"open": false}` | finalizes the layer, advances, retunes the control wavelength |
+| Source switched, shutter opens | `{"open": true}` | begins fitting the next layer |
+| Stop, shutter closes | `{"open": false}` | finalizes the last layer, ends the run |
+
+If the chamber owes a report and stays silent for the configured mean shutter delay plus ten seconds, the operator is asked whether to keep waiting, assume the transition happened, or abort the run.
 
 ---
 

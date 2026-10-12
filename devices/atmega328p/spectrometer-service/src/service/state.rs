@@ -22,8 +22,11 @@ pub struct DeviceState {
     pub mono_error: Option<String>,
     pub is_running: bool,
     pub current_material: String,
+    pub current_fraction: Option<f64>,
     pub is_depositing: bool,
     pub latest_reading: Option<ProcessedMeasurement>,
+    /// Base URL of the vacuum chamber's HTTP server (`--chamber`); `None` plays a dummy chamber
+    pub chamber_url: Option<String>,
 }
 
 impl Default for DeviceState {
@@ -38,8 +41,10 @@ impl Default for DeviceState {
             mono_error: None,
             is_running: false,
             current_material: "H".to_string(),
+            current_fraction: None,
             is_depositing: false,
             latest_reading: None,
+            chamber_url: None,
         }
     }
 }

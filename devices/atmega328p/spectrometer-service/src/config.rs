@@ -47,6 +47,15 @@ pub struct Cli {
     #[arg(long, default_value = "calibration.toml")]
     pub calibration_config: std::path::PathBuf,
 
+    /// Vacuum chamber HTTP server as `host:port` (its `/switch_layer` endpoint).
+    /// Without it a dummy chamber closes and reopens the shutter on its own.
+    #[arg(long)]
+    pub chamber: Option<String>,
+
+    /// Port for the chamber's shutter reports (`POST /shutter`)
+    #[arg(long, default_value = "8474")]
+    pub shutter_listen: u16,
+
     #[command(subcommand)]
     pub mode: Option<Mode>,
 }

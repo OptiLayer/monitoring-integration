@@ -63,6 +63,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create shared state
     let device_state = create_shared_state();
+    match &cli.chamber {
+        Some(chamber) => {
+            let url = if chamber.starts_with("http") {
+                chamber.clone()
+            } else {
+                format!("http://{chamber}")
+            };
+            tracing::info!(
+                "Vacuum chamber at {url}; shutter reports accepted on port {}",
+                cli.shutter_listen
+            );
+            device_state.write().await.chamber_url = Some(url);
+        }
+        None => tracing::info!(
+            "No --chamber: a dummy chamber closes and reopens the shutter on its own"
+        ),
+    }
 
     // Create broadcast channel for WebSocket
     let (broadcast_tx, _) = broadcast::channel(256);
@@ -148,19 +165,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Create and run HTTP server
-    let router = api::create_router(app_state);
+    // Create and run the HTTP servers: OptiMonitor's device API and the chamber's shutter port
+    let router = api::create_router(app_state.clone());
+    let shutter_router = api::create_shutter_router(app_state);
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.listen).parse()?;
+    let shutter_addr: SocketAddr = format!("{}:{}", cli.host, cli.shutter_listen).parse()?;
 
     tracing::info!("HTTP server listening on {}", addr);
+    tracing::info!("Shutter reports listening on {}", shutter_addr);
     tracing::info!("Open http://localhost:{} for calibration UI", cli.listen);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let shutter_listener = tokio::net::TcpListener::bind(shutter_addr).await?;
 
-    // Run server with graceful shutdown
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Run both servers with graceful shutdown
+    tokio::try_join!(
+        axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()),
+        axum::serve(shutter_listener, shutter_router).with_graceful_shutdown(shutdown_signal()),
+    )?;
 
     // Cleanup
     tracing::info!("Shutting down...");

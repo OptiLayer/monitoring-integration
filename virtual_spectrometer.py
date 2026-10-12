@@ -109,6 +109,25 @@ class VirtualSpectrometer:
                     logger.error(f"Error in data generation loop: {e}")
                     await asyncio.sleep(self.update_interval)
 
+    async def report_shutter(self, open: bool) -> None:
+        """Tell OptiMonitor the shutter physically closed or opened."""
+        if not (self.monitoring_api_url and self.vacuum_chamber_id):
+            return
+        url = f"{self.monitoring_api_url}/vacuum-chambers/{self.vacuum_chamber_id}/shutter"
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(url, json={"open": open, "spectrometer_id": self.spectrometer_id}, timeout=5.0)
+            except Exception as e:
+                logger.error(f"Error reporting shutter: {e}")
+
+    async def switch_layer(self, material: str, fraction: float) -> None:
+        """Play the chamber: close, switch, reopen two seconds later."""
+        await self.report_shutter(False)
+        await asyncio.sleep(2.0)
+        self.current_material = material
+        self.current_fraction = fraction
+        await self.report_shutter(True)
+
     async def start(self):
         if self.is_running:
             logger.warning("Already running")
@@ -209,13 +228,15 @@ def create_app(spectrometer: VirtualSpectrometer) -> FastAPI:
     @app.post("/vacuum_chamber/start")
     async def start_vacuum_chamber():
         await spectrometer.start()
-        logger.info("Vacuum chamber started - beginning deposition")
+        await spectrometer.report_shutter(True)
+        logger.info("Vacuum chamber started - shutter open, beginning deposition")
         return {"status": "running"}
 
     @app.post("/vacuum_chamber/stop")
     async def stop_vacuum_chamber():
         await spectrometer.stop()
-        logger.info("Vacuum chamber stopped - deposition ended")
+        await spectrometer.report_shutter(False)
+        logger.info("Vacuum chamber stopped - shutter closed, deposition ended")
         return {"status": "stopped"}
 
     @app.get("/vacuum_chamber/status")
@@ -231,8 +252,14 @@ def create_app(spectrometer: VirtualSpectrometer) -> FastAPI:
 
     @app.post("/vacuum_chamber/material")
     async def set_vacuum_chamber_material(payload: dict = Body(...)):
-        spectrometer.current_material = payload.get("material", "H")
-        spectrometer.current_fraction = payload.get("fraction", 100.0)
+        material = payload.get("material", "H")
+        fraction = payload.get("fraction", 100.0)
+        if spectrometer.is_running:
+            asyncio.create_task(spectrometer.switch_layer(material, fraction))
+            logger.info(f"Layer switch to {material} requested")
+            return {"material": material, "fraction": fraction}
+        spectrometer.current_material = material
+        spectrometer.current_fraction = fraction
         logger.info(f"Material set to {spectrometer.current_material} with fraction {spectrometer.current_fraction}%")
         return {"material": spectrometer.current_material, "fraction": spectrometer.current_fraction}
 

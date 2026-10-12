@@ -42,6 +42,13 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// The router the vacuum chamber talks to: its shutter reports
+pub fn create_shutter_router(state: AppState) -> Router {
+    Router::new()
+        .route("/shutter", post(vacuum_chamber::shutter_report))
+        .with_state(state)
+}
+
 #[cfg(test)]
 mod tests {
 

@@ -4,4 +4,4 @@ pub mod routes;
 pub mod web_ui;
 pub mod websocket;
 
-pub use routes::create_router;
+pub use routes::{create_router, create_shutter_router};

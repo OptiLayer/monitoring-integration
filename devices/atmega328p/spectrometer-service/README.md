@@ -218,10 +218,24 @@ Available at `http://localhost:<port>` (default 8100).
 | GET | `/device/info` | Device capabilities |
 | POST | `/register` | Register with monitoring API |
 | GET/POST | `/control_wavelength` | Wavelength control — moves the monochromator when `--mono` is set |
-| GET/POST | `/vacuum_chamber/material` | Material setting |
-| POST | `/vacuum_chamber/start` | Start deposition |
-| POST | `/vacuum_chamber/stop` | Stop deposition |
+| GET/POST | `/vacuum_chamber/material` | Material setting; while depositing, a layer switch |
+| POST | `/vacuum_chamber/start` | Arm the run; OptiMonitor fits once the shutter opens |
+| POST | `/vacuum_chamber/stop` | Last layer: close the shutter and keep it closed |
 | GET | `/vacuum_chamber/status` | Chamber status |
+
+### Vacuum Chamber
+
+OptiMonitor fits a layer until the chamber reports its shutter closed and resumes on the open report, so the service sits between the two:
+
+| Direction | Call | Meaning |
+|-----------|------|---------|
+| service → chamber | `POST http://<chamber>/switch_layer {"last_layer": false}` | Current layer is done: close the shutter, switch the source, reopen when ready |
+| service → chamber | `POST http://<chamber>/switch_layer {"last_layer": true}` | Close the shutter and do not reopen; the run is over |
+| chamber → service | `POST http://<service>:8474/shutter {"open": false\|true}` | The shutter physically closed / opened (sent on every transition) |
+| service → OptiMonitor | `POST {monitoring_api_url}/vacuum-chambers/{id}/shutter {"open": ...}` | The relayed report |
+
+- `--chamber <host:port>` names the chamber's HTTP server; `--shutter-listen` (default `8474`) is the port the chamber reports to.
+- Without `--chamber` the service plays a dummy chamber: the shutter opens on Start, closes at once on a layer switch and reopens two seconds later, and closes for good on Stop.
 
 ## Config Persistence
 

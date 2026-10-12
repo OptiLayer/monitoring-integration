@@ -138,6 +138,7 @@ def create_app(driver: HoribaDriver, calibration_path: Path = DEFAULT_CALIBRATIO
             return {"status": "already running"}
         is_running = True
         acquisition_task = asyncio.create_task(acquisition_loop())
+        await monitoring.report_shutter(True)
         return {"status": "running"}
 
     @app.post("/vacuum_chamber/stop")
@@ -151,6 +152,7 @@ def create_app(driver: HoribaDriver, calibration_path: Path = DEFAULT_CALIBRATIO
             except asyncio.CancelledError:
                 pass
             acquisition_task = None
+        await monitoring.report_shutter(False)
         return {"status": "stopped"}
 
     @app.get("/vacuum_chamber/status")
@@ -163,7 +165,16 @@ def create_app(driver: HoribaDriver, calibration_path: Path = DEFAULT_CALIBRATIO
 
     @app.post("/vacuum_chamber/material")
     async def set_material(payload: dict):
-        return {"material": payload.get("material", "H")}
+        # No chamber behind this service: play the shutter so OptiMonitor
+        # completes the layer switch (closed → next layer, open → fitting).
+        if is_running:
+            asyncio.create_task(_dummy_switch())
+        return {"material": payload.get("material", "H"), "fraction": payload.get("fraction", 100.0)}
+
+    async def _dummy_switch() -> None:
+        await monitoring.report_shutter(False)
+        await asyncio.sleep(2.0)
+        await monitoring.report_shutter(True)
 
     # --- Calibration endpoints ---
     #
